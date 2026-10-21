@@ -88,8 +88,10 @@ DIVIDER_SPLIT = re.compile(r"\s?\*\*\*\s?")
 # The counting_composition prompt writes the divider as "* * *", the same Markdown divider as "***".
 COMPOSITION_DIVIDER_SPLIT = re.compile(r"\s?(?:\*\*\*|\* \* \*)\s?")
 COMPOSITION_PARAGRAPHS = 3
-# A marker line may open with Markdown markup, as in "**P.S.**" or "## Section 1".
+# A marker line may open with Markdown markup, as in "**P.S.**".
 MARKDOWN_LINE_START = r"^[ \t#*_>]*"
+# Markdown markup and opening quotes or brackets that may stand before a section marker.
+SECTION_MARKER_LEAD = " \t#*_>\"'\u201c\u2018([{\u00ab\u300c\u300e\uff08"
 
 CONSTRAINED_RESPONSES = ("My answer is yes.", "My answer is no.", "My answer is maybe.")
 # Exactly six asterisks; a longer run is not the separator.
@@ -170,6 +172,18 @@ def abbreviation_dot(token: str, following: str) -> bool:
     if word in NUMBER_ABBREVIATIONS:
         return following.isdigit()
     return bool(DOTTED_TOKEN.fullmatch(word)) or word in ABBREVIATIONS
+
+
+def starts_line_or_sentence(text: str, start: int) -> bool:
+    """Whether only markup and opening quotes stand between ``start`` and a line start or a sentence end."""
+    index = start
+    while index > 0 and text[index - 1] in SECTION_MARKER_LEAD:
+        index -= 1
+    if index == 0 or text[index - 1] == "\n":
+        return True
+    while index > 0 and text[index - 1] in CLOSERS:
+        index -= 1
+    return index > 0 and text[index - 1] in SENTENCE_ENDING_MARKS
 
 
 def word_key(word: str) -> str:
@@ -481,13 +495,14 @@ def json_format(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("detectable_format:multiple_sections")
 def multiple_sections(text: str, params: dict) -> tuple[bool, str]:
-    """A section begins with a line that starts with the splitter and its number, after optional Markdown."""
+    """A section begins with the splitter and its number at the start of a line or a sentence, after
+    optional Markdown markup or an opening quote; a mention inside a sentence is no marker."""
     expected = params.get("num_sections")
     splitter = params.get("section_spliter") or params.get("section_splitter") or "Section"
     if not isinstance(expected, int) or not isinstance(splitter, str):
         return False, "bad kwargs"
-    marker = re.compile(MARKDOWN_LINE_START + re.escape(splitter) + r"\s*\d+", flags=re.IGNORECASE | re.MULTILINE)
-    markers = list(marker.finditer(text))
+    marker = re.compile(r"(?<![^\W_])" + re.escape(splitter) + r"\s*\d+", flags=re.IGNORECASE)
+    markers = [found for found in marker.finditer(text) if starts_line_or_sentence(text, found.start())]
     bodies = [
         text[found.end() : following.start() if following else len(text)]
         for found, following in pairwise([*markers, None])

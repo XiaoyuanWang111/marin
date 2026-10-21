@@ -11,9 +11,10 @@ from verifyit.modes import grade_ifeval
 from verifyit.modes.ifeval import CONSTRAINTS
 from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec
 
-# A passing and a failing response per constraint, written the way a model would answer. The last
-# cases cover Chinese sentences, Kannada and Hindi words with vowel signs, a quote or a >> that closes
-# a sentence, a C pointer that is no highlight, and a divider line that is no paragraph.
+# A passing and a failing response per constraint, written the way a model would answer. Later cases
+# cover Chinese sentences, Kannada and Hindi words with vowel signs, a quote or a >> that closes a
+# sentence, section markers that start a sentence, a C pointer that is no highlight, and a divider line
+# that is no paragraph.
 CASES = [
     (
         "length_constraints:number_paragraphs",
@@ -176,6 +177,18 @@ CASES = [
         {"num_sections": 2, "section_spliter": "Section"},
         "Section 1\nSetup steps.\nSection 2\nTest steps.",
         "Section 1 covers setup, and Section 2 covers tests.",
+    ),
+    (
+        "detectable_format:multiple_sections",
+        {"num_sections": 2, "section_spliter": "Section"},
+        "Here is the plan. Section 1 Setup steps. Section 2 Test steps.",
+        "Here is the plan for Section 1 setup. Section 2 Test steps.",
+    ),
+    (
+        "detectable_format:multiple_sections",
+        {"num_sections": 2, "section_spliter": "Section"},
+        '"Section 1\nSetup steps.\nSection 2\nTest steps."',
+        "Section 1\nSetup steps, which Section 2 repeats.",
     ),
     (
         "paragraphs:paragraphs",
