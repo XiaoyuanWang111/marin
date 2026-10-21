@@ -10,23 +10,55 @@ pure stdlib: this module has to run inside every task image without an extra.
 ``language:response_language`` describes an instruction the model was given rather than a property
 that can be measured exactly, so its check is an approximation, and its docstring says so.
 
-A word is a run of letters or digits in any script, with apostrophes and hyphens inside it, so
-``don't`` and ``high-risk`` are one word each and a run of Han characters is one word.
+A word is a run of letters, digits and combining marks in any script, with apostrophes, hyphens and
+zero-width joiners inside it, so ``don't`` and ``high-risk`` are one word each, a Devanagari vowel
+sign stays in its word, and a run of Han characters is one word. A sentence ends at ``.``, ``!``,
+``?`` or an ellipsis before whitespace, after any closing quotes or brackets, and at a Chinese,
+Japanese, Devanagari, Arabic, Armenian or Ethiopic sentence-final mark wherever it stands.
 """
 
 import json
 import re
+import sys
+import unicodedata
 from collections import Counter
 from collections.abc import Callable
+from itertools import pairwise
 
 Check = Callable[[str, dict], tuple[bool, str]]
 
 CONSTRAINTS: dict[str, Check] = {}
 
 PARAGRAPH_SEPARATOR = re.compile(r"\n\s*\n+")
-SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
+SENTENCE_FINAL = ".!?\u2026"
+# Closing quotes and brackets that may stand between a sentence's final mark and the space after it.
+CLOSERS = "\"'\u201d\u2019)]}\u00bb\u300d\u300f\uff09"
+# Sentence-final marks of Chinese, Japanese, Devanagari, Arabic, Urdu, Armenian and Ethiopic text,
+# which end a sentence wherever they stand.
+SCRIPT_SENTENCE_MARKS = "\u3002\uff0e\uff01\uff1f\uff61\u0964\u0965\u06d4\u061f\u0589\u1362"
+SENTENCE_END = re.compile(rf"[{re.escape(SENTENCE_FINAL)}]+[{re.escape(CLOSERS)}]*(?=\s)|[{SCRIPT_SENTENCE_MARKS}]+")
 APOSTROPHES = "'\u2019"
-WORD = re.compile(r"[^\W_](?:[^\W_]|['\u2019\-](?=[^\W_]))*")
+# Inside a word these join word characters: "don't", "high-risk", and Persian or Indic words written
+# with a zero-width non-joiner or joiner.
+WORD_JOINERS = APOSTROPHES + "-\u200c\u200d"
+
+
+def _combining_mark_ranges() -> str:
+    """Every Unicode combining mark (category M), as ranges for a regex character class."""
+    ranges: list[list[int]] = []
+    for code in range(sys.maxunicode + 1):
+        if unicodedata.category(chr(code))[0] != "M":
+            continue
+        if ranges and ranges[-1][1] == code - 1:
+            ranges[-1][1] = code
+        else:
+            ranges.append([code, code])
+    return "".join(f"{chr(low)}-{chr(high)}" for low, high in ranges)
+
+
+# A word character is a letter, a digit or a combining mark, such as a Devanagari vowel sign.
+WORD_CHARACTER = rf"(?:[^\W_]|[{_combining_mark_ranges()}])"
+WORD = re.compile(rf"[^\W_](?:{WORD_CHARACTER}|[{re.escape(WORD_JOINERS)}](?={WORD_CHARACTER}))*")
 BULLET = re.compile(r"^\s*[\*\-]\s+\S")
 BULLET_ONLY_LINE = re.compile(r"^[\s*\-+]*$")
 SQUARE_BRACKETS = re.compile(r"\[[^\[\]\n]*[^\[\]\s][^\[\]\n]*\]")
@@ -35,11 +67,18 @@ TITLE_MARKER = re.compile(r"<<[^<>\n]*[^<>\s][^<>\n]*>>")
 DOUBLE_ANGLE_SPAN = re.compile(r"<<((?:(?!<<|>>)[^\n])*)>>")
 JSON_FENCE = re.compile(r"^```(?:json)?\s*\n(.*)\n```\s*$", re.DOTALL)
 MARKDOWN_HIGHLIGHT = re.compile(r"\*{1,2}[^*\n]+\*{1,2}")
-# A sentence end followed by whitespace, or by a hyphen and then whitespace: sentences not joined by a hyphen.
-UNJOINED_SENTENCE_END = re.compile(r"(\S*)([.!?])[\"')\]]*(?:\s|-\s)")
+# A sentence end that no hyphen joins to the next sentence: a final mark and any closers before
+# whitespace, or before a hyphen and whitespace; or a script's sentence-final mark before anything but
+# a hyphen and the next sentence.
+UNJOINED_SENTENCE_END = re.compile(
+    rf"([{re.escape(SENTENCE_FINAL)}]+)[{re.escape(CLOSERS)}]*(?:\s|-\s)|[{SCRIPT_SENTENCE_MARKS}](?!-\S|\s*$)"
+)
 DIVIDER_SPLIT = re.compile(r"\s?\*\*\*\s?")
 # The counting_composition prompt writes the divider as "* * *", the same Markdown divider as "***".
 COMPOSITION_DIVIDER_SPLIT = re.compile(r"\s?(?:\*\*\*|\* \* \*)\s?")
+COMPOSITION_PARAGRAPHS = 3
+# A marker line may open with Markdown markup, as in "**P.S.**" or "## Section 1".
+MARKDOWN_LINE_START = r"^[ \t#*_>]*"
 
 CONSTRAINED_RESPONSES = ("My answer is yes.", "My answer is no.", "My answer is maybe.")
 # Exactly six asterisks; a longer run is not the separator.
@@ -49,7 +88,6 @@ DOTS = ".\uff0e\ufe52\u2024\u2025\u2026"
 # Markdown emphasis or quotation marks around the whole answer, as in "**My answer is yes.**".
 ANSWER_WRAPPING = re.compile(r'^(\*{1,2}|")(.*)\1$', re.DOTALL)
 ABBREVIATIONS = frozenset({"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "cf", "no"})
-SENTENCE_FINAL = ".!?"
 
 # Closed-class words that are cheap evidence a response is in the requested language. Scripts with
 # no entry (zh, ja, ko, ar, th) are checked by their share of non-ASCII characters instead.
@@ -88,26 +126,38 @@ def paragraphs(text: str) -> list[str]:
     return [p for p in PARAGRAPH_SEPARATOR.split(text.strip()) if p.strip()]
 
 
-def divided_parts(text: str, divider: re.Pattern[str]) -> list[str] | None:
-    """Paragraphs separated by a markdown divider, or None when two dividers leave an empty one."""
-    parts = divider.split(text.strip())
-    if parts and not parts[0].strip():
-        parts = parts[1:]
-    if parts and not parts[-1].strip():
-        parts = parts[:-1]
-    return None if any(not part.strip() for part in parts) else parts
+def divided_parts(text: str, divider: re.Pattern[str]) -> list[str]:
+    """Paragraphs separated by a markdown divider; a part with no text, as between two dividers, is none."""
+    return [part for part in divider.split(text) if part.strip()]
 
 
 def sentences(text: str) -> list[str]:
-    return [s.strip() for s in SENTENCE_BOUNDARY.split(text.strip()) if s.strip()]
+    found, start = [], 0
+    for end in SENTENCE_END.finditer(text):
+        found.append(text[start : end.end()])
+        start = end.end()
+    found.append(text[start:])
+    return [sentence.strip() for sentence in found if sentence.strip()]
 
 
 def words(text: str) -> list[str]:
     return WORD.findall(text)
 
 
+def is_word_character(character: str) -> bool:
+    return character.isalnum() or unicodedata.category(character)[0] == "M"
+
+
+def token_before(text: str, end: int) -> str:
+    """The text before ``end`` back to the last whitespace or hyphen."""
+    start = end
+    while start > 0 and not text[start - 1].isspace() and text[start - 1] != "-":
+        start -= 1
+    return text[start:end]
+
+
 def word_key(word: str) -> str:
-    """The word lowercased, without a trailing possessive, so "Space's" and "space" share a key."""
+    """The word lowercased and without a trailing 's, so "Space's" and "space" share a key, as do "it's" and "it"."""
     lowered = word.lower()
     return lowered[:-2] if len(lowered) > 2 and lowered[-2] in APOSTROPHES and lowered[-1] == "s" else lowered
 
@@ -156,8 +206,6 @@ def number_paragraphs(text: str, params: dict) -> tuple[bool, str]:
     if not isinstance(expected, int):
         return False, "missing num_paragraphs"
     parts = divided_parts(text, DIVIDER_SPLIT)
-    if parts is None:
-        return False, "empty paragraph between dividers"
     return len(parts) == expected, f"paragraphs={len(parts)} expected={expected}"
 
 
@@ -305,7 +353,7 @@ def start_end(text: str, params: dict) -> tuple[bool, str]:
     found = words(stripped)
     if not found:
         return False, "empty"
-    if not stripped[-1].isalnum():
+    if not is_word_character(stripped[-1]):
         return False, f"text ends with {stripped[-1]!r} after the last word"
     return same_word(found[0], found[-1]), f"start={found[0]!r} end={found[-1]!r}"
 
@@ -420,10 +468,12 @@ def multiple_sections(text: str, params: dict) -> tuple[bool, str]:
     splitter = params.get("section_spliter") or params.get("section_splitter") or "Section"
     if not isinstance(expected, int) or not isinstance(splitter, str):
         return False, "bad kwargs"
-    marker = re.compile(r"^[ \t#*_>]*" + re.escape(splitter) + r"\s*\d+", flags=re.IGNORECASE | re.MULTILINE)
+    marker = re.compile(MARKDOWN_LINE_START + re.escape(splitter) + r"\s*\d+", flags=re.IGNORECASE | re.MULTILINE)
     markers = list(marker.finditer(text))
-    ends = [found.start() for found in markers[1:]] + [len(text)]
-    bodies = [text[found.end() : end] for found, end in zip(markers, ends, strict=True)]
+    bodies = [
+        text[found.end() : following.start() if following else len(text)]
+        for found, following in pairwise([*markers, None])
+    ]
     if any(not WORD.search(body) for body in bodies):
         return False, "a section has no text after its marker"
     return len(markers) == expected, f"sections={len(markers)} expected={expected} splitter={splitter!r}"
@@ -448,7 +498,7 @@ def outside_spans(text: str, spans: list[re.Match]) -> str | None:
 
 @constraint("detectable_format:square_brackets")
 def square_brackets(text: str, params: dict) -> tuple[bool, str]:
-    """Every word must sit in its own bracket span; punctuation may stay outside, as in "[Hello], [world]"."""
+    """Every word must sit in a bracket span with no whitespace; punctuation may stay outside: "[Hello], [world]"."""
     if not WORD.search(text):
         return False, "no words"
     uncovered = outside_spans(text, list(ONE_WORD_BRACKETS.finditer(text)))
@@ -462,11 +512,12 @@ def sentence_hyphens(text: str, params: dict) -> tuple[bool, str]:
     if not WORD.search(stripped):
         return False, "no sentences"
     for match in UNJOINED_SENTENCE_END.finditer(stripped):
-        # The text before the dot back to the last hyphen, so "One.-e.g." is read as "e.g." and "One.-Two." as "Two.".
-        token = match.group(1).rsplit("-", 1)[-1].lower()
-        if match.group(2) == "." and ("." in token or token in ABBREVIATIONS):
-            continue
-        return False, f"sentence end without a hyphen after {match.group(0).strip()!r}"
+        # A dot after an abbreviation or inside a dotted token such as "e.g." ends no sentence.
+        if match.group(1) == ".":
+            token = token_before(stripped, match.start()).lower()
+            if "." in token or token in ABBREVIATIONS:
+                continue
+        return False, f"sentence end without a hyphen at {stripped[max(0, match.start() - 20) : match.end()].strip()!r}"
     return True, "sentences joined by hyphens"
 
 
@@ -507,7 +558,7 @@ def postscript(text: str, params: dict) -> tuple[bool, str]:
     marker = params.get("postscript_marker")
     if not isinstance(marker, str):
         return False, "missing postscript_marker"
-    match = re.search(r"^\s*" + re.escape(marker), text, flags=re.MULTILINE | re.IGNORECASE)
+    match = re.search(MARKDOWN_LINE_START + re.escape(marker), text, flags=re.MULTILINE | re.IGNORECASE)
     # The postscript needs some text after its marker.
     found = match is not None and WORD.search(text, match.end()) is not None
     return found, f"has_postscript={marker!r}: {found}"
@@ -528,19 +579,14 @@ def number_placeholders(text: str, params: dict) -> tuple[bool, str]:
 @constraint("paragraphs:paragraphs")
 def divided_paragraphs(text: str, params: dict) -> tuple[bool, str]:
     """Exactly two paragraphs, separated by the markdown divider ``***``."""
-    parts = divided_parts(text, DIVIDER_SPLIT)
-    if parts is None:
-        return False, "empty paragraph between dividers"
-    return len(parts) == 2, f"*** divided paragraphs={len(parts)}"
+    return number_paragraphs(text, {"num_paragraphs": 2})
 
 
 @constraint("paragraphs:paragraphs2")
 def divided_paragraphs2(text: str, params: dict) -> tuple[bool, str]:
-    """Exactly two paragraphs, separated by two line breaks."""
-    parts = text.strip().split("\n\n")
-    if any(not part.strip() for part in parts):
-        return False, "empty paragraph between blank lines"
-    return len(parts) == 2, f"blank-line paragraphs={len(parts)}"
+    """Exactly two paragraphs, separated by blank lines."""
+    found = paragraphs(text)
+    return len(found) == 2, f"blank-line paragraphs={len(found)}"
 
 
 # === first_word / last_word =================================================
@@ -601,7 +647,7 @@ def last_word_sent(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("count:count_unique")
 def count_unique(text: str, params: dict) -> tuple[bool, str]:
-    """No word may appear twice, ignoring case and a trailing possessive."""
+    """No word may appear twice, ignoring case and a trailing 's."""
     counts = Counter(word_key(w) for w in words(text))
     if not counts:
         return False, "empty"
@@ -640,10 +686,8 @@ def counting_composition(text: str, params: dict) -> tuple[bool, str]:
     if not isinstance(expected_sentences, int) or not isinstance(expected_words, int):
         return False, "bad kwargs"
     parts = divided_parts(text, COMPOSITION_DIVIDER_SPLIT)
-    if parts is None:
-        return False, "empty paragraph between dividers"
-    if len(parts) != 3:
-        return False, f"paragraphs={len(parts)} need=3"
+    if len(parts) != COMPOSITION_PARAGRAPHS:
+        return False, f"paragraphs={len(parts)} need={COMPOSITION_PARAGRAPHS}"
     for number, part in enumerate(parts):
         found = sentences(part)
         if len(found) != expected_sentences:
@@ -651,7 +695,7 @@ def counting_composition(text: str, params: dict) -> tuple[bool, str]:
         counts = [len(words(sentence)) for sentence in found]
         if any(count != expected_words for count in counts):
             return False, f"paragraph {number} sentence word counts {counts}, need={expected_words}"
-    return True, f"3 paragraphs of {expected_sentences} sentences of {expected_words} words"
+    return True, f"{COMPOSITION_PARAGRAPHS} paragraphs of {expected_sentences} sentences of {expected_words} words"
 
 
 # === letters ================================================================

@@ -9,7 +9,8 @@ from verifyit.instruction_observations import prepare_extended_instruction_obser
 from verifyit.modes import grade_ifeval
 from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec
 
-# One passing and one failing response per constraint, written the way a model would answer.
+# A passing and a failing response per constraint, written the way a model would answer. The last
+# cases use Chinese sentences, Kannada words with vowel signs, and a quote that closes a sentence.
 CASES = [
     (
         "length_constraints:number_paragraphs",
@@ -225,7 +226,7 @@ CASES = [
     (
         "detectable_content:postscript",
         {"postscript_marker": "P.S."},
-        "Main text.\nP.S. Bring water.",
+        "Main text.\n**P.S.** Bring water.",
         "Main text.\nP.S.",
     ),
     (
@@ -233,6 +234,30 @@ CASES = [
         {"capital_relation": "at least", "capital_frequency": 2},
         "СССР и США",  # noqa: RUF001 - Cyrillic capitals.
         "СССР и мир",  # noqa: RUF001 - Cyrillic capitals.
+    ),
+    (
+        "length_constraints:number_sentences",
+        {"relation": "at least", "num_sentences": 2},
+        "第一句。第二句。",
+        "只有一句。",
+    ),
+    (
+        "length_constraints:number_words",
+        {"relation": "less than", "num_words": 2},
+        "ಪ್ರಪಂಚ",
+        "ಮತ್ತು ಪ್ರಪಂಚ",
+    ),
+    (
+        "detectable_format:sentence_hyphens",
+        {},
+        "第一句。-第二句。",
+        "第一句。第二句。",
+    ),
+    (
+        "detectable_format:sentence_hyphens",
+        {},
+        "He said “Stop!”-Then he left.",
+        "He said “Stop!” Then he left.",
     ),
 ]
 
