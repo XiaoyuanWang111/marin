@@ -337,6 +337,36 @@ CASES = [
         "Love is all you need, love",
         "Love is all you need, love ❤️",
     ),
+    (
+        "detectable_format:sentence_hyphens",
+        {},
+        "他说：“走吧。”-我们就走了。",  # noqa: RUF001 - Chinese punctuation.
+        "他说：“走吧。”我们就走了。",  # noqa: RUF001 - Chinese punctuation.
+    ),
+    (
+        "detectable_format:sentence_hyphens",
+        {},
+        "We use e.g. this one.-Then stop.",
+        "We use e.g. this one. Then stop.",
+    ),
+    (
+        "detectable_format:sentence_hyphens",
+        {},
+        "See Fig. 3 for the plot.-It helps.",
+        "I ate a fig. It was sweet.",
+    ),
+    (
+        "detectable_format:sentence_hyphens",
+        {},
+        "See No. 5 for details.-It helps.",
+        "My answer is no. Sorry about that.",
+    ),
+    (
+        "length_constraints:number_sentences",
+        {"relation": "at most", "num_sentences": 1},
+        "“只有一句。”",
+        "“第一句。”“第二句。”",
+    ),
 ]
 
 

@@ -14,7 +14,8 @@ A word is a run of letters, digits and combining marks in any script, with apost
 zero-width joiners inside it, so ``don't`` and ``high-risk`` are one word each, a Devanagari vowel
 sign stays in its word, and a run of Han characters is one word. A sentence ends at ``.``, ``!``,
 ``?`` or an ellipsis before whitespace, after any closing quotes or brackets, and at a Chinese,
-Japanese, Devanagari, Arabic, Armenian or Ethiopic sentence-final mark wherever it stands.
+Japanese, Devanagari, Arabic, Armenian or Ethiopic sentence-final mark wherever it stands, after any
+closing quotes or brackets that follow it.
 """
 
 import json
@@ -96,12 +97,12 @@ TWO_RESPONSE_SEPARATOR = re.compile(r"(?<!\*)\*{6}(?!\*)")
 DOTS = ".\uff0e\ufe52\u2024\u2025\u2026"
 # Markdown emphasis or quotation marks around the whole answer, as in "**My answer is yes.**".
 ANSWER_WRAPPING = re.compile(r'^(\*{1,2}|")(.*)\1$', re.DOTALL)
-# Abbreviations whose dot ends no sentence; "No." is one only before a number, as in "No. 5".
-ABBREVIATIONS = frozenset(
-    {"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs", "etc", "cf", "approx", "fig", "vol"}
-)
-# Letters joined by dots, such as "e.g", "U.S" or "a.m"; the dot after such a token ends no sentence.
-DOTTED_TOKEN = re.compile(r"[^\W\d_]+(?:\.[^\W\d_]+)+")
+# Abbreviations whose dot ends no sentence. "No.", "Fig." and "Vol." are ones only before a number,
+# as in "No. 5", since "no", "fig" and "vol" are also words.
+ABBREVIATIONS = frozenset({"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs", "etc", "cf", "approx"})
+NUMBER_ABBREVIATIONS = frozenset({"no", "fig", "vol"})
+# Letters joined by dots, such as "e.g", "U.S" or "9a.m"; the dot after such a token ends no sentence.
+DOTTED_TOKEN = re.compile(r"\d*[^\W\d_]+(?:\.[^\W\d_]+)+")
 
 # Closed-class words that are cheap evidence a response is in the requested language. Scripts with
 # no entry (zh, ja, ko, ar, th) are checked by their share of non-ASCII characters instead.
@@ -165,7 +166,9 @@ def token_before(text: str, end: int) -> str:
 def abbreviation_dot(token: str, following: str) -> bool:
     """Whether the dot after ``token`` ends an abbreviation, such as "e.g." or "Dr.", rather than a sentence."""
     word = re.sub(r"^\W+", "", token).lower()
-    return bool(DOTTED_TOKEN.fullmatch(word)) or word in ABBREVIATIONS or (word == "no" and following.isdigit())
+    if word in NUMBER_ABBREVIATIONS:
+        return following.isdigit()
+    return bool(DOTTED_TOKEN.fullmatch(word)) or word in ABBREVIATIONS
 
 
 def word_key(word: str) -> str:
