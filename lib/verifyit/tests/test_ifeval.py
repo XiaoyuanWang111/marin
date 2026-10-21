@@ -14,8 +14,8 @@ CASES = [
     (
         "length_constraints:number_paragraphs",
         {"num_paragraphs": 2},
+        "The first thing to know.\n***\nThe second thing to know.",
         "The first thing to know.\n\nThe second thing to know.",
-        "Only one paragraph here.",
     ),
     (
         "length_constraints:number_words",
@@ -122,14 +122,117 @@ CASES = [
     (
         "count:lowercase_counting",
         {"N": 4},
-        "these five words stay lowercase",
-        "These Words Are Capitalised",
+        "Ship it now, Ana.",
+        "these words don't stay capitalized",
     ),
     (
         "combination:two_responses",
         {},
         "First take on the question.\n******\nSecond take on the question.",
         "Only one take on the question.",
+    ),
+    (
+        "keywords:no_adjacent_consecutive",
+        {},
+        "Zebras eat grass quietly.",
+        "An apple boat.",
+    ),
+    (
+        "keywords:start_end",
+        {},
+        "Hello there, hello",
+        "Hello there, hello.",
+    ),
+    (
+        "startend:quotation",
+        {},
+        '"A quoted answer."',
+        "'A quoted answer.'",
+    ),
+    (
+        "detectable_format:square_brackets",
+        {},
+        "[Hello], [world].",
+        "[Hello] world",
+    ),
+    (
+        "detectable_format:sentence_hyphens",
+        {},
+        "The sky is blue.-The grass is green.",
+        "The sky is blue. The grass is green.",
+    ),
+    (
+        "detectable_format:bigram_wrapping",
+        {},
+        "<<I am>> <<at home>>",
+        "<<I am>> at home",
+    ),
+    (
+        "detectable_format:multiple_sections",
+        {"num_sections": 2, "section_spliter": "Section"},
+        "Section 1\nSetup steps.\nSection 2\nTest steps.",
+        "Section 1 covers setup, and Section 2 covers tests.",
+    ),
+    (
+        "paragraphs:paragraphs",
+        {},
+        "First paragraph.\n***\nSecond paragraph.",
+        "First.\n***\nSecond.\n***\nThird.",
+    ),
+    (
+        "paragraphs:paragraphs2",
+        {},
+        "First paragraph.\n\nSecond paragraph.",
+        "First.\n\nSecond.\n\nThird.",
+    ),
+    (
+        "count:count_unique",
+        {},
+        "Every word here differs.",
+        "Each word differs, except this word.",
+    ),
+    (
+        "count:counting_composition",
+        {"n_sent": 3, "n_words": 2},
+        "Go now. Be fast. Run far.\n* * *\nEat well. Sleep early. Stay calm.\n* * *\n"
+        "Read books. Write notes. Think deeply.",
+        "Go now. Be fast. Run far.",
+    ),
+    (
+        "letters:letter_counting",
+        {"N": 3, "relation": "less than"},
+        "42",
+        "Yes",
+    ),
+    (
+        "copy:repeat_phrase",
+        {"phrase": "The pen is mightier than sword", "small_n": 2},
+        "The pen is stronger than sword. The pen is sharper than sword.",
+        "The pen is mightier than sword. The pen is mightier than sword.",
+    ),
+    (
+        "punctuation:punctuation_dot",
+        {},
+        "No dots appear here",
+        "Wait for it…",
+    ),
+    (
+        "detectable_format:constrained_response",
+        {},
+        "**My answer is yes.**",
+        "My answer is yes. It works.",
+    ),
+    (
+        "detectable_content:postscript",
+        {"postscript_marker": "P.S."},
+        "Main text.\nP.S. Bring water.",
+        "Main text.\nP.S.",
+    ),
+    (
+        "change_case:capital_word_frequency",
+        {"capital_relation": "at least", "capital_frequency": 2},
+        "СССР и США",  # noqa: RUF001 - Cyrillic capitals.
+        "СССР и мир",  # noqa: RUF001 - Cyrillic capitals.
     ),
 ]
 
@@ -228,6 +331,8 @@ def test_constraint_missing_its_parameters_fails_the_candidate(tmp_path, workspa
         ("Same answer.****** Same answer. ", 0.0),
         ("First.******Second.******Third.", 0.0),
         ("First.************Second.", 0.0),
+        ("First.*******Second.", 0.0),
+        ("Responses should be separated by 6 asterisk symbols: ******.", 0.0),
     ],
 )
 def test_two_responses_requires_exactly_two_distinct_answers(tmp_path, workspace, text, expected):

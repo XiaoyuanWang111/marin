@@ -7,13 +7,16 @@ Each check takes the candidate text and the constraint's params and returns ``(p
 The detail is a short human-readable string that lands in the reward's ``detail`` field. Checks are
 pure stdlib: this module has to run inside every task image without an extra.
 
-Several IFEval instruction ids describe an instruction the model was given rather than a property
-that can be measured exactly (``count:count_unique``, ``language:response_language``,
-``detectable_format:bigram_wrapping``). Those are approximations, and the docstring on each says so.
+``language:response_language`` describes an instruction the model was given rather than a property
+that can be measured exactly, so its check is an approximation, and its docstring says so.
+
+A word is a run of letters or digits in any script, with apostrophes and hyphens inside it, so
+``don't`` and ``high-risk`` are one word each and a run of Han characters is one word.
 """
 
 import json
 import re
+from collections import Counter
 from collections.abc import Callable
 
 Check = Callable[[str, dict], tuple[bool, str]]
@@ -22,17 +25,31 @@ CONSTRAINTS: dict[str, Check] = {}
 
 PARAGRAPH_SEPARATOR = re.compile(r"\n\s*\n+")
 SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
-WORD = re.compile(r"[A-Za-z0-9'\-]+")
-BULLET = re.compile(r"^\s*[\*\-]\s+")
-SQUARE_BRACKETS = re.compile(r"\[[^\[\]\n]+\]")
-TITLE_MARKER = re.compile(r"<<[^<>\n]+>>")
+APOSTROPHES = "'\u2019"
+WORD = re.compile(r"[^\W_](?:[^\W_]|['\u2019\-](?=[^\W_]))*")
+BULLET = re.compile(r"^\s*[\*\-]\s+\S")
+BULLET_ONLY_LINE = re.compile(r"^[\s*\-+]*$")
+SQUARE_BRACKETS = re.compile(r"\[[^\[\]\n]*[^\[\]\s][^\[\]\n]*\]")
+ONE_WORD_BRACKETS = re.compile(r"\[[^\[\]\s]*\]")
+TITLE_MARKER = re.compile(r"<<[^<>\n]*[^<>\s][^<>\n]*>>")
+DOUBLE_ANGLE_SPAN = re.compile(r"<<((?:(?!<<|>>)[^\n])*)>>")
 JSON_FENCE = re.compile(r"^```(?:json)?\s*\n(.*)\n```\s*$", re.DOTALL)
 MARKDOWN_HIGHLIGHT = re.compile(r"\*{1,2}[^*\n]+\*{1,2}")
-BOLD_BIGRAM = re.compile(r"\*\*\s*\w+\s+\w+\s*\*\*")
+# A sentence end followed by whitespace, or by a hyphen and then whitespace: sentences not joined by a hyphen.
+UNJOINED_SENTENCE_END = re.compile(r"(\S*)([.!?])[\"')\]]*(?:\s|-\s)")
+DIVIDER_SPLIT = re.compile(r"\s?\*\*\*\s?")
+# The counting_composition prompt writes the divider as "* * *", the same Markdown divider as "***".
+COMPOSITION_DIVIDER_SPLIT = re.compile(r"\s?(?:\*\*\*|\* \* \*)\s?")
 
 CONSTRAINED_RESPONSES = ("My answer is yes.", "My answer is no.", "My answer is maybe.")
-TWO_RESPONSE_SEPARATOR = "******"
-PARAGRAPH_DIVIDER = "***"
+# Exactly six asterisks; a longer run is not the separator.
+TWO_RESPONSE_SEPARATOR = re.compile(r"(?<!\*)\*{6}(?!\*)")
+# Full stop, fullwidth and small full stops, one- and two-dot leaders, and the ellipsis "…".
+DOTS = ".\uff0e\ufe52\u2024\u2025\u2026"
+# Markdown emphasis or quotation marks around the whole answer, as in "**My answer is yes.**".
+ANSWER_WRAPPING = re.compile(r'^(\*{1,2}|")(.*)\1$', re.DOTALL)
+ABBREVIATIONS = frozenset({"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "cf", "no"})
+SENTENCE_FINAL = ".!?"
 
 # Closed-class words that are cheap evidence a response is in the requested language. Scripts with
 # no entry (zh, ja, ko, ar, th) are checked by their share of non-ASCII characters instead.
@@ -56,8 +73,6 @@ LANGUAGE_HINTS: dict[str, set[str]] = {
 }
 NON_ASCII_MIN = 10
 NON_ASCII_SHARE = 0.2
-UNIQUE_WORDS_MIN = 5
-UNIQUE_WORDS_SHARE = 0.5
 PALINDROME_MIN_LETTERS = 3
 
 
@@ -73,12 +88,32 @@ def paragraphs(text: str) -> list[str]:
     return [p for p in PARAGRAPH_SEPARATOR.split(text.strip()) if p.strip()]
 
 
+def divided_parts(text: str, divider: re.Pattern[str]) -> list[str] | None:
+    """Paragraphs separated by a markdown divider, or None when two dividers leave an empty one."""
+    parts = divider.split(text.strip())
+    if parts and not parts[0].strip():
+        parts = parts[1:]
+    if parts and not parts[-1].strip():
+        parts = parts[:-1]
+    return None if any(not part.strip() for part in parts) else parts
+
+
 def sentences(text: str) -> list[str]:
     return [s.strip() for s in SENTENCE_BOUNDARY.split(text.strip()) if s.strip()]
 
 
 def words(text: str) -> list[str]:
     return WORD.findall(text)
+
+
+def word_key(word: str) -> str:
+    """The word lowercased, without a trailing possessive, so "Space's" and "space" share a key."""
+    lowered = word.lower()
+    return lowered[:-2] if len(lowered) > 2 and lowered[-2] in APOSTROPHES and lowered[-1] == "s" else lowered
+
+
+def same_word(word: str, target: str) -> bool:
+    return word_key(word) == word_key(target)
 
 
 def count_keyword(text: str, keyword: str) -> int:
@@ -116,11 +151,14 @@ def _with_relation(actual: int, relation: str, expected: int, prefix: str) -> tu
 
 @constraint("length_constraints:number_paragraphs")
 def number_paragraphs(text: str, params: dict) -> tuple[bool, str]:
+    """The prompt separates paragraphs with the markdown divider ``***``."""
     expected = params.get("num_paragraphs")
     if not isinstance(expected, int):
         return False, "missing num_paragraphs"
-    actual = len(paragraphs(text))
-    return actual == expected, f"paragraphs={actual} expected={expected}"
+    parts = divided_parts(text, DIVIDER_SPLIT)
+    if parts is None:
+        return False, "empty paragraph between dividers"
+    return len(parts) == expected, f"paragraphs={len(parts)} expected={expected}"
 
 
 @constraint("length_constraints:number_words")
@@ -150,7 +188,7 @@ def nth_paragraph_first_word(text: str, params: dict) -> tuple[bool, str]:
     if len(found) != expected_paragraphs or nth < 1 or nth > len(found):
         return False, f"paragraphs={len(found)} need={expected_paragraphs} nth={nth}"
     actual = words(found[nth - 1])
-    if not actual or actual[0].lower() != first_word.lower():
+    if not actual or not same_word(actual[0], first_word):
         return False, f"got first_word={actual[:1]} expected={first_word!r}"
     return True, "ok"
 
@@ -231,7 +269,7 @@ def keyword_specific_position(text: str, params: dict) -> tuple[bool, str]:
         return False, f"sentence has {len(in_sentence)} words, need pos {word_index}"
     actual = in_sentence[word_index - 1]
     return (
-        actual.lower() == keyword.lower(),
+        same_word(actual, keyword),
         f"pos[{sentence_index},{word_index}]={actual!r} expected={keyword!r}",
     )
 
@@ -248,21 +286,28 @@ def palindrome(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("keywords:no_adjacent_consecutive")
 def no_adjacent_consecutive(text: str, params: dict) -> tuple[bool, str]:
-    """No two adjacent words may be identical, ignoring case."""
-    lowered = [w.lower() for w in words(text)]
-    for index in range(1, len(lowered)):
-        if lowered[index] == lowered[index - 1]:
-            return False, f"adjacent dup at pos {index}: {lowered[index]!r}"
-    return True, "no adjacent duplicates"
+    """No word may follow a word whose first letter comes just before its own, as in "apple banana".
+
+    Like NVIDIA's checker, letters of any script are compared by code point, so "в городе" fails too.
+    """
+    initials = [w[0].lower() for w in words(text)]
+    for index in range(1, len(initials)):
+        left, right = initials[index - 1], initials[index]
+        if left.isalpha() and right.isalpha() and ord(right) - ord(left) == 1:
+            return False, f"adjacent words at pos {index} start with {left!r} and {right!r}"
+    return True, "no adjacent consecutive initials"
 
 
 @constraint("keywords:start_end")
 def start_end(text: str, params: dict) -> tuple[bool, str]:
-    """The response must start and end with the same word."""
-    found = words(text)
+    """The response must start and end with the same word, with nothing after the last word."""
+    stripped = text.strip()
+    found = words(stripped)
     if not found:
         return False, "empty"
-    return found[0].lower() == found[-1].lower(), f"start={found[0]!r} end={found[-1]!r}"
+    if not stripped[-1].isalnum():
+        return False, f"text ends with {stripped[-1]!r} after the last word"
+    return same_word(found[0], found[-1]), f"start={found[0]!r} end={found[-1]!r}"
 
 
 # === change_case ============================================================
@@ -305,8 +350,9 @@ def no_comma(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("punctuation:punctuation_dot")
 def no_dot(text: str, params: dict) -> tuple[bool, str]:
-    """IFEval semantics: the response must contain no periods at all."""
-    return "." not in text, f"has_dot={'.' in text}"
+    """IFEval semantics: the response must contain no dots at all, an ellipsis "…" included."""
+    found = sorted({c for c in text if c in DOTS})
+    return not found, f"dots={found}"
 
 
 @constraint("punctuation:punctuation_exclamation")
@@ -327,12 +373,10 @@ def end_checker(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("startend:quotation")
 def quotation(text: str, params: dict) -> tuple[bool, str]:
-    """The whole response must be wrapped in quotes, straight or typographic."""
+    """The whole response must be wrapped in double quotation marks, straight or typographic."""
     stripped = text.strip()
-    passed = (
-        (stripped.startswith('"') and stripped.endswith('"'))
-        or (stripped.startswith("“") and stripped.endswith("”"))
-        or (stripped.startswith("'") and stripped.endswith("'"))
+    passed = len(stripped) > 1 and (
+        (stripped.startswith('"') and stripped.endswith('"')) or (stripped.startswith("“") and stripped.endswith("”"))
     )
     return passed, f"quoted={passed}"
 
@@ -345,7 +389,8 @@ def number_bullet_lists(text: str, params: dict) -> tuple[bool, str]:
     expected = params.get("num_bullets")
     if not isinstance(expected, int):
         return False, "missing num_bullets"
-    actual = sum(1 for line in text.splitlines() if BULLET.match(line))
+    # A line of only markers, such as the divider "* * *" or "---", is not a bullet point.
+    actual = sum(1 for line in text.splitlines() if BULLET.match(line) and not BULLET_ONLY_LINE.match(line))
     return actual == expected, f"bullets={actual} expected={expected}"
 
 
@@ -370,12 +415,18 @@ def json_format(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("detectable_format:multiple_sections")
 def multiple_sections(text: str, params: dict) -> tuple[bool, str]:
+    """A section begins with a line that starts with the splitter and its number, after optional Markdown."""
     expected = params.get("num_sections")
     splitter = params.get("section_spliter") or params.get("section_splitter") or "Section"
     if not isinstance(expected, int) or not isinstance(splitter, str):
         return False, "bad kwargs"
-    actual = len(re.findall(re.escape(splitter) + r"\s*\d+", text, flags=re.IGNORECASE))
-    return actual == expected, f"sections={actual} expected={expected} splitter={splitter!r}"
+    marker = re.compile(r"^[ \t#*_>]*" + re.escape(splitter) + r"\s*\d+", flags=re.IGNORECASE | re.MULTILINE)
+    markers = list(marker.finditer(text))
+    ends = [found.start() for found in markers[1:]] + [len(text)]
+    bodies = [text[found.end() : end] for found, end in zip(markers, ends, strict=True)]
+    if any(not WORD.search(body) for body in bodies):
+        return False, "a section has no text after its marker"
+    return len(markers) == expected, f"sections={len(markers)} expected={expected} splitter={splitter!r}"
 
 
 @constraint("detectable_format:number_highlighted_sections")
@@ -387,37 +438,63 @@ def number_highlighted_sections(text: str, params: dict) -> tuple[bool, str]:
     return actual >= expected, f"highlights={actual} need>={expected}"
 
 
+def outside_spans(text: str, spans: list[re.Match]) -> str | None:
+    """The first word of ``text`` that no span covers."""
+    for word in WORD.finditer(text):
+        if not any(span.start() < word.start() and word.end() < span.end() for span in spans):
+            return word.group()
+    return None
+
+
 @constraint("detectable_format:square_brackets")
 def square_brackets(text: str, params: dict) -> tuple[bool, str]:
-    found = bool(SQUARE_BRACKETS.search(text))
-    return found, f"has_square_brackets={found}"
+    """Every word must sit in its own bracket span; punctuation may stay outside, as in "[Hello], [world]"."""
+    if not WORD.search(text):
+        return False, "no words"
+    uncovered = outside_spans(text, list(ONE_WORD_BRACKETS.finditer(text)))
+    return uncovered is None, f"word outside one-word brackets: {uncovered!r}" if uncovered else "every word bracketed"
 
 
 @constraint("detectable_format:sentence_hyphens")
 def sentence_hyphens(text: str, params: dict) -> tuple[bool, str]:
-    """Every sentence must join its words with hyphens instead of spaces."""
-    found = sentences(text)
-    if not found:
+    """Sentences must be joined by hyphens with no whitespace between them, as in "One.-Two."."""
+    stripped = text.strip()
+    if not WORD.search(stripped):
         return False, "no sentences"
-    for sentence in found:
-        body = sentence.rstrip(".!?")
-        if " " in body or "\t" in body:
-            return False, f"sentence has whitespace: {body[:40]!r}"
-        if "-" not in body:
-            return False, f"sentence missing hyphen: {body[:40]!r}"
-    return True, f"hyphenated sentences={len(found)}"
+    for match in UNJOINED_SENTENCE_END.finditer(stripped):
+        # The text before the dot back to the last hyphen, so "One.-e.g." is read as "e.g." and "One.-Two." as "Two.".
+        token = match.group(1).rsplit("-", 1)[-1].lower()
+        if match.group(2) == "." and ("." in token or token in ABBREVIATIONS):
+            continue
+        return False, f"sentence end without a hyphen after {match.group(0).strip()!r}"
+    return True, "sentences joined by hyphens"
 
 
 @constraint("detectable_format:bigram_wrapping")
 def bigram_wrapping(text: str, params: dict) -> tuple[bool, str]:
-    """Approximate: at least one word pair is wrapped in markdown bold."""
-    found = bool(BOLD_BIGRAM.search(text))
-    return found, f"bigram_bold={found}"
+    """Every word must sit in a <<...>> span of two words; the last span of a line or a sentence may hold one."""
+    if not WORD.search(text):
+        return False, "no words"
+    for line in text.splitlines():
+        spans = list(DOUBLE_ANGLE_SPAN.finditer(line))
+        uncovered = outside_spans(line, spans)
+        if uncovered is not None:
+            return False, f"word outside <<...>>: {uncovered!r}"
+        for index, span in enumerate(spans):
+            count = len(words(span.group(1)))
+            after = line[span.end() : span.end() + 1]
+            closes = span.group(1).rstrip()[-1:] in SENTENCE_FINAL or after in SENTENCE_FINAL or index == len(spans) - 1
+            if count != 2 and not (count == 1 and closes):
+                return False, f"span {span.group(0)!r} holds {count} words"
+    return True, "every bigram wrapped"
 
 
 @constraint("detectable_format:constrained_response")
 def constrained_response(text: str, params: dict) -> tuple[bool, str]:
     stripped = text.strip()
+    wrapped = ANSWER_WRAPPING.match(stripped)
+    if wrapped:
+        stripped = wrapped.group(2).strip()
     passed = stripped in CONSTRAINED_RESPONSES
     return passed, f"matched_constrained={passed}"
 
@@ -430,7 +507,9 @@ def postscript(text: str, params: dict) -> tuple[bool, str]:
     marker = params.get("postscript_marker")
     if not isinstance(marker, str):
         return False, "missing postscript_marker"
-    found = bool(re.search(r"^\s*" + re.escape(marker), text, flags=re.MULTILINE | re.IGNORECASE))
+    match = re.search(r"^\s*" + re.escape(marker), text, flags=re.MULTILINE | re.IGNORECASE)
+    # The postscript needs some text after its marker.
+    found = match is not None and WORD.search(text, match.end()) is not None
     return found, f"has_postscript={marker!r}: {found}"
 
 
@@ -448,19 +527,20 @@ def number_placeholders(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("paragraphs:paragraphs")
 def divided_paragraphs(text: str, params: dict) -> tuple[bool, str]:
-    """IFEval writes ``***`` between paragraphs; blank-line separation is accepted too."""
-    by_divider = [p for p in text.split(PARAGRAPH_DIVIDER) if p.strip()]
-    by_blank_line = paragraphs(text)
-    if len(by_divider) >= 2:
-        return True, f"*** divided paragraphs={len(by_divider)}"
-    if len(by_blank_line) >= 2:
-        return True, f"blank-line paragraphs={len(by_blank_line)}"
-    return False, f"need >=2 paragraphs (divider={len(by_divider)} blank={len(by_blank_line)})"
+    """Exactly two paragraphs, separated by the markdown divider ``***``."""
+    parts = divided_parts(text, DIVIDER_SPLIT)
+    if parts is None:
+        return False, "empty paragraph between dividers"
+    return len(parts) == 2, f"*** divided paragraphs={len(parts)}"
 
 
 @constraint("paragraphs:paragraphs2")
 def divided_paragraphs2(text: str, params: dict) -> tuple[bool, str]:
-    return divided_paragraphs(text, params)
+    """Exactly two paragraphs, separated by two line breaks."""
+    parts = text.strip().split("\n\n")
+    if any(not part.strip() for part in parts):
+        return False, "empty paragraph between blank lines"
+    return len(parts) == 2, f"blank-line paragraphs={len(parts)}"
 
 
 # === first_word / last_word =================================================
@@ -473,7 +553,7 @@ def first_word_answer(text: str, params: dict) -> tuple[bool, str]:
         return False, "missing first_word"
     found = words(text)
     actual = found[0] if found else ""
-    return actual.lower() == expected.lower(), f"first={actual!r} expected={expected!r}"
+    return same_word(actual, expected), f"first={actual!r} expected={expected!r}"
 
 
 @constraint("first_word:first_word_sent")
@@ -486,7 +566,7 @@ def first_word_sent(text: str, params: dict) -> tuple[bool, str]:
         return False, "no sentences"
     for sentence in found:
         in_sentence = words(sentence)
-        if not in_sentence or in_sentence[0].lower() != expected.lower():
+        if not in_sentence or not same_word(in_sentence[0], expected):
             return False, f"sent starts with {in_sentence[:1]} need={expected!r}"
     return True, f"all {len(found)} sentences start with {expected!r}"
 
@@ -498,7 +578,7 @@ def last_word_answer(text: str, params: dict) -> tuple[bool, str]:
         return False, "missing last_word"
     found = words(text)
     actual = found[-1] if found else ""
-    return actual.lower() == expected.lower(), f"last={actual!r} expected={expected!r}"
+    return same_word(actual, expected), f"last={actual!r} expected={expected!r}"
 
 
 @constraint("last_word:last_word_sent")
@@ -511,7 +591,7 @@ def last_word_sent(text: str, params: dict) -> tuple[bool, str]:
         return False, "no sentences"
     for sentence in found:
         in_sentence = words(sentence.rstrip(".!?\"' "))
-        if not in_sentence or in_sentence[-1].lower() != expected.lower():
+        if not in_sentence or not same_word(in_sentence[-1], expected):
             return False, f"sent ends with {in_sentence[-1:]} need={expected!r}"
     return True, f"all {len(found)} sentences end with {expected!r}"
 
@@ -521,13 +601,12 @@ def last_word_sent(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("count:count_unique")
 def count_unique(text: str, params: dict) -> tuple[bool, str]:
-    """Approximate: the response must use mostly distinct words."""
-    lowered = [w.lower() for w in words(text)]
-    if not lowered:
+    """No word may appear twice, ignoring case and a trailing possessive."""
+    counts = Counter(word_key(w) for w in words(text))
+    if not counts:
         return False, "empty"
-    unique = len(set(lowered))
-    passed = unique >= max(UNIQUE_WORDS_MIN, int(UNIQUE_WORDS_SHARE * len(lowered)))
-    return passed, f"unique={unique} total={len(lowered)}"
+    repeated = sorted(word for word, count in counts.items() if count > 1)
+    return not repeated, f"unique={len(counts)} total={counts.total()} repeated={repeated[:5]}"
 
 
 @constraint("count:count_increment_word")
@@ -545,27 +624,34 @@ def count_increment_word(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("count:lowercase_counting")
 def lowercase_counting(text: str, params: dict) -> tuple[bool, str]:
+    """Reads "all lowercase words should appear at most N times" as NVIDIA's checker does: at most N in total."""
     expected = params.get("N")
     if not isinstance(expected, int):
         return False, "missing N"
-    actual = sum(1 for w in words(text) if w.isalpha() and w.islower())
-    return actual >= expected, f"lower_words={actual} need>={expected}"
+    actual = sum(1 for w in words(text) if w.islower())
+    return actual <= expected, f"lower_words={actual} need<={expected}"
 
 
 @constraint("count:counting_composition")
 def counting_composition(text: str, params: dict) -> tuple[bool, str]:
+    """Three paragraphs between ``* * *`` dividers, each of n_sent sentences of n_words words."""
     expected_sentences = params.get("n_sent")
     expected_words = params.get("n_words")
     if not isinstance(expected_sentences, int) or not isinstance(expected_words, int):
         return False, "bad kwargs"
-    found = sentences(text)
-    if len(found) < expected_sentences:
-        return False, f"sentences={len(found)} need>={expected_sentences}"
-    for index, sentence in enumerate(found[:expected_sentences]):
-        count = len(words(sentence))
-        if count < expected_words:
-            return False, f"sent[{index}] has {count} words, need>={expected_words}"
-    return True, f"first {expected_sentences} sentences each have >={expected_words} words"
+    parts = divided_parts(text, COMPOSITION_DIVIDER_SPLIT)
+    if parts is None:
+        return False, "empty paragraph between dividers"
+    if len(parts) != 3:
+        return False, f"paragraphs={len(parts)} need=3"
+    for number, part in enumerate(parts):
+        found = sentences(part)
+        if len(found) != expected_sentences:
+            return False, f"paragraph {number} has {len(found)} sentences, need={expected_sentences}"
+        counts = [len(words(sentence)) for sentence in found]
+        if any(count != expected_words for count in counts):
+            return False, f"paragraph {number} sentence word counts {counts}, need={expected_words}"
+    return True, f"3 paragraphs of {expected_sentences} sentences of {expected_words} words"
 
 
 # === letters ================================================================
@@ -573,11 +659,12 @@ def counting_composition(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("letters:letter_counting")
 def letter_counting(text: str, params: dict) -> tuple[bool, str]:
-    """Approximate: the Nemotron rows carry no letter threshold, so this counts words."""
+    """The prompt counts letters ("Answer with less than N letters"); like NVIDIA's checker, only a to z."""
     expected = params.get("N")
     if not isinstance(expected, int):
         return False, "missing N"
-    return _with_relation(len(words(text)), params.get("relation", "at least"), expected, "words:")
+    actual = sum(1 for c in text if c.isascii() and c.isalpha())
+    return _with_relation(actual, params.get("relation", "at least"), expected, "letters:")
 
 
 @constraint("letters:letter_counting2")
@@ -610,12 +697,25 @@ def response_language(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("copy:repeat_phrase")
 def repeat_phrase(text: str, params: dict) -> tuple[bool, str]:
+    """The phrase must appear exactly small_n times, each time with one word other than the first and last replaced."""
     phrase = params.get("phrase")
     expected = params.get("small_n")
     if not isinstance(phrase, str) or not isinstance(expected, int):
         return False, "bad kwargs"
-    actual = len(re.findall(re.escape(phrase), text, flags=re.IGNORECASE))
-    return actual >= expected, f"phrase_count={actual} need>={expected}"
+    target = [word_key(w) for w in words(phrase)]
+    found = [word_key(w) for w in words(text)]
+    changes = []
+    index = 0
+    while target and index + len(target) <= len(found):
+        differing = [j for j, word in enumerate(target) if found[index + j] != word]
+        if len(differing) <= 1:
+            changes.append(differing)
+            index += len(target)
+        else:
+            index += 1
+    inner = range(1, len(target) - 1)
+    passed = len(changes) == expected and all(len(change) == 1 and change[0] in inner for change in changes)
+    return passed, f"copies={len(changes)} need={expected} changed_positions={changes}"
 
 
 # === combination ============================================================
@@ -623,9 +723,10 @@ def repeat_phrase(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("combination:two_responses")
 def two_responses(text: str, params: dict) -> tuple[bool, str]:
-    sections = text.split(TWO_RESPONSE_SEPARATOR)
-    if any(not section.strip() for section in sections[1:-1]):
+    sections = TWO_RESPONSE_SEPARATOR.split(text)
+    if any(not WORD.search(section) for section in sections[1:-1]):
         return False, "empty section between responses"
-    parts = [section.strip() for section in sections if section.strip()]
+    # A part with no words, such as the "." after a closing separator, is not a response.
+    parts = [section.strip() for section in sections if WORD.search(section)]
     passed = len(parts) == 2 and parts[0] != parts[1]
     return passed, f"sections_by_******={len(parts)}"
