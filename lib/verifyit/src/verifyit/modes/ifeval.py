@@ -37,6 +37,7 @@ CLOSERS = "\"'\u201d\u2019)]}\u00bb\u300d\u300f\uff09"
 # which end a sentence wherever they stand.
 SCRIPT_SENTENCE_MARKS = "\u3002\uff0e\uff01\uff1f\uff61\u0964\u0965\u06d4\u061f\u0589\u1362"
 SENTENCE_END = re.compile(rf"[{re.escape(SENTENCE_FINAL)}]+[{re.escape(CLOSERS)}]*(?=\s)|[{SCRIPT_SENTENCE_MARKS}]+")
+SENTENCE_ENDING_MARKS = tuple(SENTENCE_FINAL + SCRIPT_SENTENCE_MARKS)
 APOSTROPHES = "'\u2019"
 # Inside a word these join word characters: "don't", "high-risk", and Persian or Indic words written
 # with a zero-width non-joiner or joiner.
@@ -528,8 +529,12 @@ def bigram_wrapping(text: str, params: dict) -> tuple[bool, str]:
             return False, f"word outside <<...>>: {uncovered!r}"
         for index, span in enumerate(spans):
             count = len(words(span.group(1)))
-            after = line[span.end() : span.end() + 1]
-            closes = span.group(1).rstrip()[-1:] in SENTENCE_FINAL or after in SENTENCE_FINAL or index == len(spans) - 1
+            # The sentence's final mark sits inside the span, before any closing quote, or right after it.
+            closes = (
+                index == len(spans) - 1
+                or span.group(1).rstrip().rstrip(CLOSERS).endswith(SENTENCE_ENDING_MARKS)
+                or line.startswith(SENTENCE_ENDING_MARKS, span.end())
+            )
             if count != 2 and not (count == 1 and closes):
                 return False, f"span {span.group(0)!r} holds {count} words"
     return True, "every bigram wrapped"

@@ -166,7 +166,7 @@ CASES = [
     (
         "detectable_format:bigram_wrapping",
         {},
-        "<<I am>> <<at home>>",
+        '<<She said>> <<"Stop.">> <<I am>> <<at home>>',
         "<<I am>> at home",
     ),
     (
