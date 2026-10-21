@@ -81,14 +81,14 @@ For a constraint-only verifier, reference_status concerns agreement between publ
 configuration. There is no canonical answer key; its absence alone is not missing context, a reason for
 reference_status=unknown, or a reason to downgrade a clearly answerable task.
 
-Distinguish a contradiction in the written instructions from impossibility under the checker. Some shared checks
-approximate language, word counts, or sentence structure; passing them does not repair a bad prompt.
+Distinguish a contradiction in the written instructions from impossibility under the checker. The shared checks count
+a run of letters, digits and combining marks as one word, so an unbroken run of Han characters is one word, and the
+language check is approximate; passing a check does not repair a bad prompt.
 
-Shared checker details: copy:repeat_phrase requires at least N unchanged case-insensitive substring occurrences, so
-transformed variants do not satisfy it. letters:letter_counting counts ASCII word matches rather than letters.
-count:count_unique requires at least five unique ASCII words and 50% uniqueness, not all words unique.
-startend:end_checker uses literal endswith, including closing delimiters. Use these facts to identify concrete
-prompt/checker mismatches; under-enforcement alone does not make an otherwise meaningful content request unanswerable.
+Shared checker details: copy:repeat_phrase requires exactly N copies of the phrase, each with one word other than the
+first and last replaced. letters:letter_counting counts only the letters a to z. startend:end_checker uses literal
+endswith, including closing delimiters. Use these facts to identify concrete prompt/checker mismatches;
+under-enforcement alone does not make an otherwise meaningful content request unanswerable.
 
 Assess whether a short answer can still convey the requested content. Do not infer impossibility just because a story
 must be compressed or a constraint makes the task difficult. Use quality=good and high confidence when there is no
