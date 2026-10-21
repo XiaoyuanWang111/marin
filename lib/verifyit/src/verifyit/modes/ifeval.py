@@ -32,8 +32,9 @@ CONSTRAINTS: dict[str, Check] = {}
 
 PARAGRAPH_SEPARATOR = re.compile(r"\n\s*\n+")
 SENTENCE_FINAL = ".!?\u2026"
-# Closing quotes and brackets that may stand between a sentence's final mark and the space after it.
-CLOSERS = "\"'\u201d\u2019)]}\u00bb\u300d\u300f\uff09"
+# Closing quotes and brackets, including the >> of <<title>>, that may stand between a sentence's
+# final mark and the space after it.
+CLOSERS = "\"'\u201d\u2019)]}>\u00bb\u300d\u300f\uff09"
 # Sentence-final marks of Chinese, Japanese, Devanagari, Arabic, Urdu, Armenian and Ethiopic text,
 # which end a sentence wherever they stand.
 SCRIPT_SENTENCE_MARKS = "\u3002\uff0e\uff01\uff1f\uff61\u0964\u0965\u06d4\u061f\u0589\u1362"

@@ -12,8 +12,8 @@ from verifyit.modes.ifeval import CONSTRAINTS
 from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec
 
 # A passing and a failing response per constraint, written the way a model would answer. The last
-# cases cover Chinese sentences, Kannada and Hindi words with vowel signs, a quote that closes a
-# sentence, a C pointer that is no highlight, and a divider line that is no paragraph.
+# cases cover Chinese sentences, Kannada and Hindi words with vowel signs, a quote or a >> that closes
+# a sentence, a C pointer that is no highlight, and a divider line that is no paragraph.
 CASES = [
     (
         "length_constraints:number_paragraphs",
@@ -360,6 +360,12 @@ CASES = [
         {},
         "See No. 5 for details.-It helps.",
         "My answer is no. Sorry about that.",
+    ),
+    (
+        "last_word:last_word_sent",
+        {"last_word": "baseball"},
+        "<<We love baseball!>> Everyone plays baseball.",
+        "<<Go to Taiwan!>> Everyone plays baseball.",
     ),
     (
         "length_constraints:number_sentences",
