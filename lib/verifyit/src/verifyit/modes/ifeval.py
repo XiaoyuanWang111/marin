@@ -59,6 +59,7 @@ def _combining_mark_ranges() -> str:
 # A word character is a letter, a digit or a combining mark, such as a Devanagari vowel sign.
 WORD_CHARACTER = rf"(?:[^\W_]|[{_combining_mark_ranges()}])"
 WORD = re.compile(rf"[^\W_](?:{WORD_CHARACTER}|[{re.escape(WORD_JOINERS)}](?={WORD_CHARACTER}))*")
+WORD_CHARACTER_PATTERN = re.compile(WORD_CHARACTER)
 BULLET = re.compile(r"^\s*[\*\-]\s+\S")
 BULLET_ONLY_LINE = re.compile(r"^[\s*\-+]*$")
 SQUARE_BRACKETS = re.compile(r"\[[^\[\]\n]*[^\[\]\s][^\[\]\n]*\]")
@@ -66,7 +67,8 @@ ONE_WORD_BRACKETS = re.compile(r"\[[^\[\]\s]*\]")
 TITLE_MARKER = re.compile(r"<<[^<>\n]*[^<>\s][^<>\n]*>>")
 DOUBLE_ANGLE_SPAN = re.compile(r"<<((?:(?!<<|>>)[^\n])*)>>")
 JSON_FENCE = re.compile(r"^```(?:json)?\s*\n(.*)\n```\s*$", re.DOTALL)
-MARKDOWN_HIGHLIGHT = re.compile(r"\*{1,2}[^*\n]+\*{1,2}")
+# One to three asterisks on each side; as in CommonMark, the span does not start or end with whitespace.
+MARKDOWN_HIGHLIGHT = re.compile(r"(?<!\*)(\*{1,3})(?![\s*])([^*\n]*?[^\s*])\1(?!\*)")
 # A sentence end that no hyphen joins to the next sentence: a final mark and any closers before
 # whitespace, or before a hyphen and whitespace; or a script's sentence-final mark before anything but
 # a hyphen and the next sentence.
@@ -122,13 +124,9 @@ def constraint(name: str) -> Callable[[Check], Check]:
     return register
 
 
-def paragraphs(text: str) -> list[str]:
-    return [p for p in PARAGRAPH_SEPARATOR.split(text.strip()) if p.strip()]
-
-
-def divided_parts(text: str, divider: re.Pattern[str]) -> list[str]:
-    """Paragraphs separated by a markdown divider; a part with no text, as between two dividers, is none."""
-    return [part for part in divider.split(text) if part.strip()]
+def paragraphs(text: str, separator: re.Pattern[str]) -> list[str]:
+    """The parts between separators that hold a word; a divider line or a run of emoji is no paragraph."""
+    return [part for part in separator.split(text) if WORD.search(part)]
 
 
 def sentences(text: str) -> list[str]:
@@ -142,10 +140,6 @@ def sentences(text: str) -> list[str]:
 
 def words(text: str) -> list[str]:
     return WORD.findall(text)
-
-
-def is_word_character(character: str) -> bool:
-    return character.isalnum() or unicodedata.category(character)[0] == "M"
 
 
 def token_before(text: str, end: int) -> str:
@@ -205,7 +199,7 @@ def number_paragraphs(text: str, params: dict) -> tuple[bool, str]:
     expected = params.get("num_paragraphs")
     if not isinstance(expected, int):
         return False, "missing num_paragraphs"
-    parts = divided_parts(text, DIVIDER_SPLIT)
+    parts = paragraphs(text, DIVIDER_SPLIT)
     return len(parts) == expected, f"paragraphs={len(parts)} expected={expected}"
 
 
@@ -232,7 +226,7 @@ def nth_paragraph_first_word(text: str, params: dict) -> tuple[bool, str]:
     first_word = params.get("first_word")
     if not isinstance(expected_paragraphs, int) or not isinstance(nth, int) or not isinstance(first_word, str):
         return False, "missing kwargs"
-    found = paragraphs(text)
+    found = paragraphs(text, PARAGRAPH_SEPARATOR)
     if len(found) != expected_paragraphs or nth < 1 or nth > len(found):
         return False, f"paragraphs={len(found)} need={expected_paragraphs} nth={nth}"
     actual = words(found[nth - 1])
@@ -324,11 +318,12 @@ def keyword_specific_position(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("keywords:palindrome")
 def palindrome(text: str, params: dict) -> tuple[bool, str]:
-    """The response must contain at least one palindromic word of three letters or more."""
+    """The response must contain a word whose letters and digits, at least three, read the same backward."""
     for word in words(text):
-        lowered = word.lower()
-        if len(lowered) >= PALINDROME_MIN_LETTERS and lowered == lowered[::-1]:
-            return True, f"palindrome={lowered!r}"
+        # Apostrophes, hyphens and combining marks are left out, as in a Devanagari "Malayalam".
+        key = "".join(c for c in word.lower() if c.isalnum())
+        if len(key) >= PALINDROME_MIN_LETTERS and key == key[::-1]:
+            return True, f"palindrome={word!r}"
     return False, "no palindrome found"
 
 
@@ -353,7 +348,7 @@ def start_end(text: str, params: dict) -> tuple[bool, str]:
     found = words(stripped)
     if not found:
         return False, "empty"
-    if not is_word_character(stripped[-1]):
+    if not WORD_CHARACTER_PATTERN.fullmatch(stripped[-1]):
         return False, f"text ends with {stripped[-1]!r} after the last word"
     return same_word(found[0], found[-1]), f"start={found[0]!r} end={found[-1]!r}"
 
@@ -484,7 +479,7 @@ def number_highlighted_sections(text: str, params: dict) -> tuple[bool, str]:
     expected = params.get("num_highlights")
     if not isinstance(expected, int):
         return False, "missing num_highlights"
-    actual = len(MARKDOWN_HIGHLIGHT.findall(text))
+    actual = sum(1 for match in MARKDOWN_HIGHLIGHT.finditer(text) if WORD.search(match.group(2)))
     return actual >= expected, f"highlights={actual} need>={expected}"
 
 
@@ -585,7 +580,7 @@ def divided_paragraphs(text: str, params: dict) -> tuple[bool, str]:
 @constraint("paragraphs:paragraphs2")
 def divided_paragraphs2(text: str, params: dict) -> tuple[bool, str]:
     """Exactly two paragraphs, separated by blank lines."""
-    found = paragraphs(text)
+    found = paragraphs(text, PARAGRAPH_SEPARATOR)
     return len(found) == 2, f"blank-line paragraphs={len(found)}"
 
 
@@ -636,7 +631,7 @@ def last_word_sent(text: str, params: dict) -> tuple[bool, str]:
     if not found:
         return False, "no sentences"
     for sentence in found:
-        in_sentence = words(sentence.rstrip(".!?\"' "))
+        in_sentence = words(sentence)
         if not in_sentence or not same_word(in_sentence[-1], expected):
             return False, f"sent ends with {in_sentence[-1:]} need={expected!r}"
     return True, f"all {len(found)} sentences end with {expected!r}"
@@ -685,7 +680,7 @@ def counting_composition(text: str, params: dict) -> tuple[bool, str]:
     expected_words = params.get("n_words")
     if not isinstance(expected_sentences, int) or not isinstance(expected_words, int):
         return False, "bad kwargs"
-    parts = divided_parts(text, COMPOSITION_DIVIDER_SPLIT)
+    parts = paragraphs(text, COMPOSITION_DIVIDER_SPLIT)
     if len(parts) != COMPOSITION_PARAGRAPHS:
         return False, f"paragraphs={len(parts)} need={COMPOSITION_PARAGRAPHS}"
     for number, part in enumerate(parts):

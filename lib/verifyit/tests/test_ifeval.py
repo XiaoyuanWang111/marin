@@ -10,7 +10,8 @@ from verifyit.modes import grade_ifeval
 from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec
 
 # A passing and a failing response per constraint, written the way a model would answer. The last
-# cases use Chinese sentences, Kannada words with vowel signs, and a quote that closes a sentence.
+# cases cover Chinese sentences, Kannada and Hindi words with vowel signs, a quote that closes a
+# sentence, a C pointer that is no highlight, and a divider line that is no paragraph.
 CASES = [
     (
         "length_constraints:number_paragraphs",
@@ -258,6 +259,24 @@ CASES = [
         {},
         "He said “Stop!”-Then he left.",
         "He said “Stop!” Then he left.",
+    ),
+    (
+        "keywords:palindrome",
+        {},
+        "मलयालम एक भाषा है।",
+        "हिंदी एक भाषा है।",
+    ),
+    (
+        "detectable_format:number_highlighted_sections",
+        {"num_highlights": 1},
+        "Use *this* one.",
+        "int *a, *b;",
+    ),
+    (
+        "paragraphs:paragraphs2",
+        {},
+        "First paragraph.\n\n***\n\nSecond paragraph.",
+        "First.\n\n---\n\nSecond.\n\nThird.",
     ),
 ]
 
