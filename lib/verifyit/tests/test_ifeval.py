@@ -4,9 +4,11 @@
 from types import SimpleNamespace
 
 import pytest
+from verifyit.execution.worker import call_bounded
 from verifyit.grade import InvalidTask, Status
 from verifyit.instruction_observations import prepare_extended_instruction_observations
 from verifyit.modes import grade_ifeval
+from verifyit.modes.ifeval import CONSTRAINTS
 from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec
 
 # A passing and a failing response per constraint, written the way a model would answer. The last
@@ -278,7 +280,86 @@ CASES = [
         "First paragraph.\n\n***\n\nSecond paragraph.",
         "First.\n\n---\n\nSecond.\n\nThird.",
     ),
+    (
+        "count:counting_composition",
+        {"n_sent": 3, "n_words": 2},
+        "Go now. Be fast. Run far.\n* * *\nEat well. Sleep early. Stay calm.\n* * *\n"
+        "Read books. Write notes. Think deeply.",
+        "Go now. Be fast. Run far.\n* * *\nEat well. Sleep early.\n* * *\nRead books. Write notes. Think deeply.",
+    ),
+    (
+        "count:counting_composition",
+        {"n_sent": 3, "n_words": 2},
+        "Go now. Be fast. Run far.\n* * *\nEat well. Sleep early. Stay calm.\n* * *\n"
+        "Read books. Write notes. Think deeply.",
+        "Go now. Be fast. Run very far.\n* * *\nEat well. Sleep early. Stay calm.\n* * *\n"
+        "Read books. Write notes. Think deeply.",
+    ),
+    (
+        "detectable_format:bigram_wrapping",
+        {},
+        "<<I am>> <<at home>>",
+        "<<I am at>> <<home>>",
+    ),
+    (
+        "copy:repeat_phrase",
+        {"phrase": "The pen is mightier than sword", "small_n": 2},
+        "The pen is stronger than sword. The pen is sharper than sword.",
+        "A pen is mightier than sword. The pen is sharper than sword.",
+    ),
+    (
+        "copy:repeat_phrase",
+        {"phrase": "The pen is mightier than sword", "small_n": 2},
+        "The pen is stronger than sword. The pen is sharper than sword.",
+        "The pen is stronger than sword. The pen is sharper than sword. The pen is greater than sword.",
+    ),
+    (
+        "detectable_format:square_brackets",
+        {},
+        "[Hello], [world].",
+        "[Hello world]",
+    ),
+    (
+        "detectable_format:sentence_hyphens",
+        {},
+        "We met Dr. Smith.-He waved.",
+        "The price is $3.50. Buy it now.",
+    ),
+    (
+        "detectable_format:sentence_hyphens",
+        {},
+        "太好了！！-我们走吧。",  # noqa: RUF001 - Chinese punctuation.
+        "太好了！！我们走吧。",  # noqa: RUF001 - Chinese punctuation.
+    ),
+    (
+        "keywords:start_end",
+        {},
+        "Love is all you need, love",
+        "Love is all you need, love ❤️",
+    ),
 ]
+
+
+# Degenerate output, such as a long run of marks or a bracket that never closes, must stay linear in the
+# text's length; each of these took seconds once.
+@pytest.mark.parametrize(
+    "name, params, text, passed",
+    [
+        (
+            "length_constraints:number_sentences",
+            {"relation": "at least", "num_sentences": 2},
+            "Wait" + "." * 40_000,
+            False,
+        ),
+        ("detectable_format:sentence_hyphens", {}, "Wait" + "!" * 40_000, True),
+        ("detectable_content:number_placeholders", {"num_placeholders": 1}, "See [" + "a" * 100_000, False),
+        ("detectable_format:title", {}, "<<" + "a" * 100_000, False),
+        ("detectable_format:square_brackets", {}, " ".join(["[word]"] * 20_000), True),
+    ],
+    ids=["sentence_marks", "hyphen_marks", "open_bracket", "open_title", "many_brackets"],
+)
+def test_check_of_degenerate_text_finishes_within_its_deadline(name, params, text, passed):
+    assert call_bounded(CONSTRAINTS[name], text, params, timeout=5)[0] is passed
 
 
 @pytest.fixture

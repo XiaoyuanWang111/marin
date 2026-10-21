@@ -36,7 +36,12 @@ CLOSERS = "\"'\u201d\u2019)]}\u00bb\u300d\u300f\uff09"
 # Sentence-final marks of Chinese, Japanese, Devanagari, Arabic, Urdu, Armenian and Ethiopic text,
 # which end a sentence wherever they stand.
 SCRIPT_SENTENCE_MARKS = "\u3002\uff0e\uff01\uff1f\uff61\u0964\u0965\u06d4\u061f\u0589\u1362"
-SENTENCE_END = re.compile(rf"[{re.escape(SENTENCE_FINAL)}]+[{re.escape(CLOSERS)}]*(?=\s)|[{SCRIPT_SENTENCE_MARKS}]+")
+# A match starts only at the first mark of a run and never gives marks back, so a long run of marks
+# takes linear time.
+SENTENCE_END = re.compile(
+    rf"(?<![{re.escape(SENTENCE_FINAL)}])[{re.escape(SENTENCE_FINAL)}]++[{re.escape(CLOSERS)}]*+(?=\s)"
+    rf"|(?<![{SCRIPT_SENTENCE_MARKS}])[{SCRIPT_SENTENCE_MARKS}]++[{re.escape(CLOSERS)}]*+"
+)
 SENTENCE_ENDING_MARKS = tuple(SENTENCE_FINAL + SCRIPT_SENTENCE_MARKS)
 APOSTROPHES = "'\u2019"
 # Inside a word these join word characters: "don't", "high-risk", and Persian or Indic words written
@@ -60,21 +65,22 @@ def _combining_mark_ranges() -> str:
 # A word character is a letter, a digit or a combining mark, such as a Devanagari vowel sign.
 WORD_CHARACTER = rf"(?:[^\W_]|[{_combining_mark_ranges()}])"
 WORD = re.compile(rf"[^\W_](?:{WORD_CHARACTER}|[{re.escape(WORD_JOINERS)}](?={WORD_CHARACTER}))*")
-WORD_CHARACTER_PATTERN = re.compile(WORD_CHARACTER)
 BULLET = re.compile(r"^\s*[\*\-]\s+\S")
 BULLET_ONLY_LINE = re.compile(r"^[\s*\-+]*$")
-SQUARE_BRACKETS = re.compile(r"\[[^\[\]\n]*[^\[\]\s][^\[\]\n]*\]")
+# A span that holds a non-space character; the lookahead keeps matching linear in the span's length.
+SQUARE_BRACKETS = re.compile(r"\[(?=[^\[\]\n]*[^\[\]\s])[^\[\]\n]*\]")
 ONE_WORD_BRACKETS = re.compile(r"\[[^\[\]\s]*\]")
-TITLE_MARKER = re.compile(r"<<[^<>\n]*[^<>\s][^<>\n]*>>")
+TITLE_MARKER = re.compile(r"<<(?=[^<>\n]*[^<>\s])[^<>\n]*>>")
 DOUBLE_ANGLE_SPAN = re.compile(r"<<((?:(?!<<|>>)[^\n])*)>>")
 JSON_FENCE = re.compile(r"^```(?:json)?\s*\n(.*)\n```\s*$", re.DOTALL)
 # One to three asterisks on each side; as in CommonMark, the span does not start or end with whitespace.
 MARKDOWN_HIGHLIGHT = re.compile(r"(?<!\*)(\*{1,3})(?![\s*])([^*\n]*?[^\s*])\1(?!\*)")
-# A sentence end that no hyphen joins to the next sentence: a final mark and any closers before
-# whitespace, or before a hyphen and whitespace; or a script's sentence-final mark before anything but
-# a hyphen and the next sentence.
+# A sentence end that no hyphen joins to the next sentence: final marks and any closers before
+# whitespace, or before a hyphen and whitespace; or a script's sentence-final marks and any closers
+# before anything but a hyphen and the next sentence. Like SENTENCE_END, it starts at a run's first mark.
 UNJOINED_SENTENCE_END = re.compile(
-    rf"([{re.escape(SENTENCE_FINAL)}]+)[{re.escape(CLOSERS)}]*(?:\s|-\s)|[{SCRIPT_SENTENCE_MARKS}](?!-\S|\s*$)"
+    rf"(?<![{re.escape(SENTENCE_FINAL)}])([{re.escape(SENTENCE_FINAL)}]++)[{re.escape(CLOSERS)}]*+(?:\s|-\s)"
+    rf"|(?<![{SCRIPT_SENTENCE_MARKS}])[{SCRIPT_SENTENCE_MARKS}]++[{re.escape(CLOSERS)}]*+(?!-\S|\s*$)"
 )
 DIVIDER_SPLIT = re.compile(r"\s?\*\*\*\s?")
 # The counting_composition prompt writes the divider as "* * *", the same Markdown divider as "***".
@@ -90,7 +96,12 @@ TWO_RESPONSE_SEPARATOR = re.compile(r"(?<!\*)\*{6}(?!\*)")
 DOTS = ".\uff0e\ufe52\u2024\u2025\u2026"
 # Markdown emphasis or quotation marks around the whole answer, as in "**My answer is yes.**".
 ANSWER_WRAPPING = re.compile(r'^(\*{1,2}|")(.*)\1$', re.DOTALL)
-ABBREVIATIONS = frozenset({"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "cf", "no"})
+# Abbreviations whose dot ends no sentence; "No." is one only before a number, as in "No. 5".
+ABBREVIATIONS = frozenset(
+    {"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs", "etc", "cf", "approx", "fig", "vol"}
+)
+# Letters joined by dots, such as "e.g", "U.S" or "a.m"; the dot after such a token ends no sentence.
+DOTTED_TOKEN = re.compile(r"[^\W\d_]+(?:\.[^\W\d_]+)+")
 
 # Closed-class words that are cheap evidence a response is in the requested language. Scripts with
 # no entry (zh, ja, ko, ar, th) are checked by their share of non-ASCII characters instead.
@@ -149,6 +160,12 @@ def token_before(text: str, end: int) -> str:
     while start > 0 and not text[start - 1].isspace() and text[start - 1] != "-":
         start -= 1
     return text[start:end]
+
+
+def abbreviation_dot(token: str, following: str) -> bool:
+    """Whether the dot after ``token`` ends an abbreviation, such as "e.g." or "Dr.", rather than a sentence."""
+    word = re.sub(r"^\W+", "", token).lower()
+    return bool(DOTTED_TOKEN.fullmatch(word)) or word in ABBREVIATIONS or (word == "no" and following.isdigit())
 
 
 def word_key(word: str) -> str:
@@ -346,12 +363,13 @@ def no_adjacent_consecutive(text: str, params: dict) -> tuple[bool, str]:
 def start_end(text: str, params: dict) -> tuple[bool, str]:
     """The response must start and end with the same word, with nothing after the last word."""
     stripped = text.strip()
-    found = words(stripped)
+    found = list(WORD.finditer(stripped))
     if not found:
         return False, "empty"
-    if not WORD_CHARACTER_PATTERN.fullmatch(stripped[-1]):
-        return False, f"text ends with {stripped[-1]!r} after the last word"
-    return same_word(found[0], found[-1]), f"start={found[0]!r} end={found[-1]!r}"
+    first, last = found[0].group(), found[-1]
+    if last.end() != len(stripped):
+        return False, f"text ends with {stripped[last.end() :][:20]!r} after the last word"
+    return same_word(first, last.group()), f"start={first!r} end={last.group()!r}"
 
 
 # === change_case ============================================================
@@ -485,9 +503,12 @@ def number_highlighted_sections(text: str, params: dict) -> tuple[bool, str]:
 
 
 def outside_spans(text: str, spans: list[re.Match]) -> str | None:
-    """The first word of ``text`` that no span covers."""
+    """The first word of ``text`` that no span covers; ``spans`` are in text order and do not overlap."""
+    index = 0
     for word in WORD.finditer(text):
-        if not any(span.start() < word.start() and word.end() < span.end() for span in spans):
+        while index < len(spans) and spans[index].end() <= word.start():
+            index += 1
+        if index == len(spans) or not spans[index].start() < word.start() < word.end() < spans[index].end():
             return word.group()
     return None
 
@@ -508,11 +529,9 @@ def sentence_hyphens(text: str, params: dict) -> tuple[bool, str]:
     if not WORD.search(stripped):
         return False, "no sentences"
     for match in UNJOINED_SENTENCE_END.finditer(stripped):
-        # A dot after an abbreviation or inside a dotted token such as "e.g." ends no sentence.
-        if match.group(1) == ".":
-            token = token_before(stripped, match.start()).lower()
-            if "." in token or token in ABBREVIATIONS:
-                continue
+        following = stripped[match.end() : match.end() + 1]
+        if match.group(1) == "." and abbreviation_dot(token_before(stripped, match.start()), following):
+            continue
         return False, f"sentence end without a hyphen at {stripped[max(0, match.start() - 20) : match.end()].strip()!r}"
     return True, "sentences joined by hyphens"
 
