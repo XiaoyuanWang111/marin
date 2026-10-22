@@ -90,10 +90,12 @@ DIVIDER_SPLIT = re.compile(r"\s?\*\*\*\s?")
 # The counting_composition prompt writes the divider as "* * *", the same Markdown divider as "***".
 COMPOSITION_DIVIDER_SPLIT = re.compile(r"\s?(?:\*\*\*|\* \* \*)\s?")
 COMPOSITION_PARAGRAPHS = 3
+# Whitespace and Markdown markup that may open a marker line.
+MARKDOWN_LEAD = " \t#*_>"
 # A marker line may open with Markdown markup, as in "**P.S.**".
-MARKDOWN_LINE_START = r"^[ \t#*_>]*"
+MARKDOWN_LINE_START = rf"^[{MARKDOWN_LEAD}]*"
 # Markdown markup and opening quotes or brackets that may stand before a section marker.
-SECTION_MARKER_LEAD = " \t#*_>\"'\u201c\u2018([{\u00ab\u300c\u300e\uff08"
+SECTION_MARKER_LEAD = MARKDOWN_LEAD + "\"'\u201c\u2018([{\u00ab\u300c\u300e\uff08"
 
 CONSTRAINED_RESPONSES = ("My answer is yes.", "My answer is no.", "My answer is maybe.")
 # Exactly six asterisks; a longer run is not the separator.
@@ -601,7 +603,6 @@ def postscript(text: str, params: dict) -> tuple[bool, str]:
     if not isinstance(marker, str):
         return False, "missing postscript_marker"
     match = re.search(MARKDOWN_LINE_START + re.escape(marker), text, flags=re.MULTILINE | re.IGNORECASE)
-    # The postscript needs some text after its marker.
     found = match is not None and WORD.search(text, match.end()) is not None
     return found, f"has_postscript={marker!r}: {found}"
 
