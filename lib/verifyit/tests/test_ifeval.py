@@ -471,6 +471,12 @@ CASES = [
         "The chicken ate.",
     ),
     (
+        "keywords:word_count_different_numbers",
+        {"keyword": "chicken", "frequency": 2, "relation": "at least"},
+        "The chicken ate. The chicken slept.",
+        "The chicken ate. The chicken slept. The chicken woke.",
+    ),
+    (
         "punctuation:punctuation_dot",
         {},
         "No dots here",
