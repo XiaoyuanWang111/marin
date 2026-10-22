@@ -470,6 +470,30 @@ CASES = [
         "The chicken ate. The chicken slept.",
         "The chicken ate.",
     ),
+    (
+        "punctuation:punctuation_dot",
+        {},
+        "No dots here",
+        "Wait\u2025",
+    ),
+    (
+        "length_constraints:number_words",
+        {"relation": "less than", "num_words": 2},
+        "क्\u200dष",
+        "क् ष",
+    ),
+    (
+        "length_constraints:number_sentences",
+        {"relation": "at least", "num_sentences": 2},
+        "Wait… Then go.",
+        "Wait, then go.",
+    ),
+    (
+        "length_constraints:number_sentences",
+        {"relation": "at least", "num_sentences": 2},
+        "पहला वाक्य। दूसरा वाक्य",
+        "पहला वाक्य दूसरा वाक्य",
+    ),
 ]
 
 

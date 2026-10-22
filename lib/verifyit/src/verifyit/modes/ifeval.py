@@ -11,12 +11,12 @@ pure stdlib: this module has to run inside every task image without an extra.
 that can be measured exactly, so its check is an approximation, and its docstring says so.
 
 A word is a run of letters, digits and combining marks in any script, with apostrophes, hyphens and
-zero-width joiners inside it, so ``don't`` and ``high-risk`` are one word each, a Devanagari vowel
-sign stays in its word, and a run of Han characters is one word. A sentence ends at ``.``, ``!``,
-``?`` or an ellipsis before whitespace, after any closing quotes or brackets, and at a Chinese,
-Japanese, Devanagari, Arabic, Armenian or Ethiopic sentence-final mark wherever it stands, after any
-closing quotes or brackets that follow it. Only ``detectable_format:sentence_hyphens`` reads the dot of
-an abbreviation, such as ``Dr.`` or ``e.g.``, as no sentence end.
+zero-width joiners or non-joiners inside it, so ``don't`` and ``high-risk`` are one word each, a
+Devanagari vowel sign stays in its word, and a run of Han characters is one word. A sentence ends at
+``.``, ``!``, ``?`` or an ellipsis before whitespace, after any closing quotes or brackets, and at a
+Chinese, Japanese, Devanagari, Arabic, Armenian or Ethiopic sentence-final mark wherever it stands,
+after any closing quotes or brackets that follow it. Only ``detectable_format:sentence_hyphens``
+reads the dot of an abbreviation, such as ``Dr.`` or ``e.g.``, as no sentence end.
 """
 
 import json
@@ -90,9 +90,8 @@ DIVIDER_SPLIT = re.compile(r"\s?\*\*\*\s?")
 # The counting_composition prompt writes the divider as "* * *", the same Markdown divider as "***".
 COMPOSITION_DIVIDER_SPLIT = re.compile(r"\s?(?:\*\*\*|\* \* \*)\s?")
 COMPOSITION_PARAGRAPHS = 3
-# Whitespace and Markdown markup that may open a marker line.
+# Whitespace and Markdown markup that may open a marker line, as in "**P.S.**".
 MARKDOWN_LEAD = " \t#*_>"
-# A marker line may open with Markdown markup, as in "**P.S.**".
 MARKDOWN_LINE_START = rf"^[{MARKDOWN_LEAD}]*"
 # Markdown markup and opening quotes or brackets that may stand before a section marker.
 SECTION_MARKER_LEAD = MARKDOWN_LEAD + "\"'\u201c\u2018([{\u00ab\u300c\u300e\uff08"
