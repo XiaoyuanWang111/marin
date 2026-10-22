@@ -14,10 +14,7 @@ from verifyit.modes import grade_ifeval
 from verifyit.modes.ifeval import CONSTRAINTS, WORD_CHARACTER
 from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec
 
-# A passing and a failing response per constraint, written the way a model would answer. Later cases
-# cover Chinese sentences, Kannada and Hindi words with vowel signs, a quote or a >> that closes a
-# sentence, section markers that start a sentence, a C pointer that is no highlight, and a divider line
-# that is no paragraph.
+# A passing and a failing response per constraint, written the way a model would answer.
 CASES = [
     (
         "length_constraints:number_paragraphs",
@@ -388,6 +385,78 @@ CASES = [
         {"relation": "at most", "num_sentences": 1},
         "“只有一句。”",
         "“第一句。”“第二句。”",
+    ),
+    (
+        "first_word:first_word_answer",
+        {"first_word": "space"},
+        "Space's edge is far.",
+        "Spaces are vast.",
+    ),
+    (
+        "letters:letter_counting",
+        {"N": 3, "relation": "less than"},
+        "Да да",
+        "Yes",
+    ),
+    (
+        "keywords:no_adjacent_consecutive",
+        {},
+        "Big apples.",
+        "A big dog.",
+    ),
+    (
+        "detectable_format:multiple_sections",
+        {"num_sections": 2, "section_spliter": "Section"},
+        "Section 1\nA.\nSection 2\nB.",
+        "Section 1\nSection 2",
+    ),
+    (
+        "detectable_format:multiple_sections",
+        {"num_sections": 2, "section_spliter": "Section"},
+        "He said “Go.” Section 1 Setup. Section 2 Tests.",
+        "He said “Go” Section 1 Setup. Section 2 Tests.",
+    ),
+    (
+        "detectable_format:number_bullet_lists",
+        {"num_bullets": 2},
+        "* One\n* * *\n* Two",
+        "* One\n* * *",
+    ),
+    (
+        "detectable_format:title",
+        {},
+        "<<A Title>>\nText.",
+        "Here: << >>",
+    ),
+    (
+        "detectable_content:number_placeholders",
+        {"num_placeholders": 1},
+        "Fill in [name] later.",
+        "Fill in [ ] later.",
+    ),
+    (
+        "count:count_unique",
+        {},
+        "One cat saw a dog.",
+        "The cat saw the dog.",
+    ),
+    (
+        "punctuation:punctuation_dot",
+        {},
+        "No dots here",
+        "Done．",  # noqa: RUF001 - fullwidth full stop.
+    ),
+    (
+        "detectable_format:bigram_wrapping",
+        {},
+        "<<I am>> <<home>>. <<You are>> <<out>>.",
+        "<<I am>> <<home>>, <<you are>> <<out>>.",
+    ),
+    (
+        "length_constraints:number_words",
+        {"relation": "less than", "num_words": 2},
+        "می\u200cخواهم",  # noqa: RUF001 - Persian letters.
+        "می خواهم",
     ),
 ]
 

@@ -15,7 +15,8 @@ zero-width joiners inside it, so ``don't`` and ``high-risk`` are one word each, 
 sign stays in its word, and a run of Han characters is one word. A sentence ends at ``.``, ``!``,
 ``?`` or an ellipsis before whitespace, after any closing quotes or brackets, and at a Chinese,
 Japanese, Devanagari, Arabic, Armenian or Ethiopic sentence-final mark wherever it stands, after any
-closing quotes or brackets that follow it.
+closing quotes or brackets that follow it. Only ``detectable_format:sentence_hyphens`` reads the dot of
+an abbreviation, such as ``Dr.`` or ``e.g.``, as no sentence end.
 """
 
 import json
@@ -99,13 +100,14 @@ CONSTRAINED_RESPONSES = ("My answer is yes.", "My answer is no.", "My answer is 
 TWO_RESPONSE_SEPARATOR = re.compile(r"(?<!\*)\*{6}(?!\*)")
 # Full stop, fullwidth and small full stops, one- and two-dot leaders, and the ellipsis "…".
 DOTS = ".\uff0e\ufe52\u2024\u2025\u2026"
-# Markdown emphasis or quotation marks around the whole answer, as in "**My answer is yes.**".
+# Markdown emphasis or straight double quotes around the whole answer, as in "**My answer is yes.**".
 ANSWER_WRAPPING = re.compile(r'^(\*{1,2}|")(.*)\1$', re.DOTALL)
-# Abbreviations whose dot ends no sentence. "No.", "Fig." and "Vol." are ones only before a number,
-# as in "No. 5", since "no", "fig" and "vol" are also words.
+# Abbreviations whose dot ends no sentence in detectable_format:sentence_hyphens. "No.", "Fig." and
+# "Vol." are ones only before a number, as in "No. 5", since "no", "fig" and "vol" are also words.
 ABBREVIATIONS = frozenset({"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs", "etc", "cf", "approx"})
 NUMBER_ABBREVIATIONS = frozenset({"no", "fig", "vol"})
-# Letters joined by dots, such as "e.g", "U.S" or "9a.m"; the dot after such a token ends no sentence.
+# Letters joined by dots, such as "e.g", "U.S" or "9a.m"; in detectable_format:sentence_hyphens the dot
+# after such a token ends no sentence.
 DOTTED_TOKEN = re.compile(r"\d*[^\W\d_]+(?:\.[^\W\d_]+)+")
 
 # Closed-class words that are cheap evidence a response is in the requested language. Scripts with
@@ -176,7 +178,8 @@ def abbreviation_dot(token: str, following: str) -> bool:
 
 
 def starts_line_or_sentence(text: str, start: int) -> bool:
-    """Whether only markup and opening quotes stand between ``start`` and a line start or a sentence end."""
+    """Whether only markup and opening quotes stand between ``start`` and a line start, or between ``start``
+    and a sentence end with its closing quotes or brackets."""
     index = start
     while index > 0 and text[index - 1] in SECTION_MARKER_LEAD:
         index -= 1
@@ -232,7 +235,7 @@ def _with_relation(actual: int, relation: str, expected: int, prefix: str) -> tu
 
 @constraint("length_constraints:number_paragraphs")
 def number_paragraphs(text: str, params: dict) -> tuple[bool, str]:
-    """The prompt separates paragraphs with the markdown divider ``***``."""
+    """The prompt says that the markdown divider ``***`` separates paragraphs."""
     expected = params.get("num_paragraphs")
     if not isinstance(expected, int):
         return False, "missing num_paragraphs"
