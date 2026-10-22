@@ -1,6 +1,9 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
 
+import re
+import sys
+import unicodedata
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +11,7 @@ from verifyit.execution.worker import call_bounded
 from verifyit.grade import InvalidTask, Status
 from verifyit.instruction_observations import prepare_extended_instruction_observations
 from verifyit.modes import grade_ifeval
-from verifyit.modes.ifeval import CONSTRAINTS
+from verifyit.modes.ifeval import CONSTRAINTS, WORD_CHARACTER
 from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec
 
 # A passing and a failing response per constraint, written the way a model would answer. Later cases
@@ -409,6 +412,12 @@ CASES = [
 )
 def test_check_of_degenerate_text_finishes_within_its_deadline(name, params, text, passed):
     assert call_bounded(CONSTRAINTS[name], text, params, timeout=5)[0] is passed
+
+
+def test_word_character_covers_every_combining_mark():
+    word_character = re.compile(WORD_CHARACTER)
+    marks = (chr(code) for code in range(sys.maxunicode + 1) if unicodedata.category(chr(code))[0] == "M")
+    assert all(word_character.fullmatch(mark) for mark in marks)
 
 
 @pytest.fixture

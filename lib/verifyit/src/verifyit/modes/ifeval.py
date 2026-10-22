@@ -20,11 +20,10 @@ closing quotes or brackets that follow it.
 
 import json
 import re
-import sys
 import unicodedata
 from collections import Counter
 from collections.abc import Callable
-from itertools import pairwise
+from itertools import chain, pairwise
 
 Check = Callable[[str, dict], tuple[bool, str]]
 
@@ -51,10 +50,15 @@ APOSTROPHES = "'\u2019"
 WORD_JOINERS = APOSTROPHES + "-\u200c\u200d"
 
 
+# Combining marks occur only in planes 0 and 1 and among the variation selectors of plane 14, so the
+# scan below skips the other code points.
+MARK_CODE_POINTS = (range(0x20000), range(0xE0100, 0xE01F0))
+
+
 def _combining_mark_ranges() -> str:
     """Every Unicode combining mark (category M), as ranges for a regex character class."""
     ranges: list[list[int]] = []
-    for code in range(sys.maxunicode + 1):
+    for code in chain(*MARK_CODE_POINTS):
         if unicodedata.category(chr(code))[0] != "M":
             continue
         if ranges and ranges[-1][1] == code - 1:
