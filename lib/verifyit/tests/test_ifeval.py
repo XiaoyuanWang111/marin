@@ -494,6 +494,36 @@ CASES = [
         "पहला वाक्य। दूसरा वाक्य",
         "पहला वाक्य दूसरा वाक्य",
     ),
+    (
+        "keywords:existence",
+        {"keywords": ["front"]},
+        "Use the _front_ door.",
+        "Use the frontal door.",
+    ),
+    (
+        "keywords:forbidden_words",
+        {"forbidden_words": ["name"]},
+        "Set the user field.",
+        "Set the user_name field.",
+    ),
+    (
+        "keywords:existence",
+        {"keywords": ["cafe"]},
+        "Meet at the cafe.",
+        "Meet at the cafe\u0301.",
+    ),
+    (
+        "keywords:word_once",
+        {"keyword": "bar"},
+        "Meet me at the \u2764\ufe0fbar tonight.",
+        "Meet me at the barn tonight.",
+    ),
+    (
+        "language:response_language",
+        {"language": "hi"},
+        "यह अच्छा है।",
+        "This is good.",
+    ),
 ]
 
 

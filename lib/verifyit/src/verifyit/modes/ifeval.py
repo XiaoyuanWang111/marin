@@ -202,7 +202,12 @@ def same_word(word: str, target: str) -> bool:
 
 
 def count_keyword(text: str, keyword: str) -> int:
-    return len(re.findall(r"\b" + re.escape(keyword) + r"\b", text, flags=re.IGNORECASE))
+    """Occurrences of the keyword not preceded by a letter or digit nor followed by a letter, digit or combining mark.
+
+    An underscore is none of these, so ``_keyword_`` and ``user_keyword`` hold the keyword.
+    """
+    pattern = rf"(?<![^\W_]){re.escape(keyword)}(?!{WORD_CHARACTER})"
+    return len(re.findall(pattern, text, flags=re.IGNORECASE))
 
 
 def contains_keyword(text: str, keyword: str, word_boundary: bool = True) -> bool:
