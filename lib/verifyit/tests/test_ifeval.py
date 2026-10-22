@@ -458,6 +458,18 @@ CASES = [
         "می\u200cخواهم",  # noqa: RUF001 - Persian letters.
         "می خواهم",
     ),
+    (
+        "keywords:word_once",
+        {"keyword": "fix"},
+        "Fix the bug, then fix the test.",
+        "Repair the bug, then test it.",
+    ),
+    (
+        "keywords:word_count_different_numbers",
+        {"keyword": "chicken", "frequency": 2, "relation": "less than"},
+        "The chicken ate. The chicken slept.",
+        "The chicken ate.",
+    ),
 ]
 
 

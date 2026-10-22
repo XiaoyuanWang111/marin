@@ -293,11 +293,12 @@ def forbidden_words(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("keywords:word_once")
 def word_once(text: str, params: dict) -> tuple[bool, str]:
+    """The prompt asks to include the keyword; "once" is only in the instruction id."""
     keyword = params.get("keyword")
     if not isinstance(keyword, str):
         return False, "missing keyword"
     count = count_keyword(text, keyword)
-    return count == 1, f"count={count} keyword={keyword!r}"
+    return count >= 1, f"count={count} keyword={keyword!r}"
 
 
 @constraint("keywords:letter_frequency")
@@ -333,8 +334,8 @@ def keyword_frequency(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("keywords:word_count_different_numbers")
 def word_count_different_numbers(text: str, params: dict) -> tuple[bool, str]:
-    """Same params as ``keywords:frequency`` in the Nemotron dataset."""
-    return keyword_frequency(text, params)
+    """The prompt asks for the keyword N times and does not show the stored relation, so the count must be N."""
+    return keyword_frequency(text, {**params, "relation": "exactly"})
 
 
 @constraint("keywords:keyword_specific_position")
