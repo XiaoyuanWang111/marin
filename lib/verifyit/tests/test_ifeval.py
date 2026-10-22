@@ -390,7 +390,7 @@ CASES = [
 
 
 # Degenerate output, such as a long run of marks or a bracket that never closes, must stay linear in the
-# text's length; each of these took seconds once.
+# text's length.
 @pytest.mark.parametrize(
     "name, params, text, passed",
     [

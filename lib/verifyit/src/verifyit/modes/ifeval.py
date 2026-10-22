@@ -38,12 +38,12 @@ CLOSERS = "\"'\u201d\u2019)]}>\u00bb\u300d\u300f\uff09"
 # Sentence-final marks of Chinese, Japanese, Devanagari, Arabic, Urdu, Armenian and Ethiopic text,
 # which end a sentence wherever they stand.
 SCRIPT_SENTENCE_MARKS = "\u3002\uff0e\uff01\uff1f\uff61\u0964\u0965\u06d4\u061f\u0589\u1362"
-# A match starts only at the first mark of a run and never gives marks back, so a long run of marks
-# takes linear time.
-SENTENCE_END = re.compile(
-    rf"(?<![{re.escape(SENTENCE_FINAL)}])[{re.escape(SENTENCE_FINAL)}]++[{re.escape(CLOSERS)}]*+(?=\s)"
-    rf"|(?<![{SCRIPT_SENTENCE_MARKS}])[{SCRIPT_SENTENCE_MARKS}]++[{re.escape(CLOSERS)}]*+"
-)
+# A run of final marks, captured, and any closers after it; and a run of a script's sentence-final
+# marks and any closers after it. A match starts only at the first mark of a run and never gives
+# marks back, so a long run of marks takes linear time.
+FINAL_MARK_RUN = rf"(?<![{re.escape(SENTENCE_FINAL)}])([{re.escape(SENTENCE_FINAL)}]++)[{re.escape(CLOSERS)}]*+"
+SCRIPT_MARK_RUN = rf"(?<![{SCRIPT_SENTENCE_MARKS}])[{SCRIPT_SENTENCE_MARKS}]++[{re.escape(CLOSERS)}]*+"
+SENTENCE_END = re.compile(rf"{FINAL_MARK_RUN}(?=\s)|{SCRIPT_MARK_RUN}")
 SENTENCE_ENDING_MARKS = tuple(SENTENCE_FINAL + SCRIPT_SENTENCE_MARKS)
 APOSTROPHES = "'\u2019"
 # Inside a word these join word characters: "don't", "high-risk", and Persian or Indic words written
@@ -79,11 +79,8 @@ JSON_FENCE = re.compile(r"^```(?:json)?\s*\n(.*)\n```\s*$", re.DOTALL)
 MARKDOWN_HIGHLIGHT = re.compile(r"(?<!\*)(\*{1,3})(?![\s*])([^*\n]*?[^\s*])\1(?!\*)")
 # A sentence end that no hyphen joins to the next sentence: final marks and any closers before
 # whitespace, or before a hyphen and whitespace; or a script's sentence-final marks and any closers
-# before anything but a hyphen and the next sentence. Like SENTENCE_END, it starts at a run's first mark.
-UNJOINED_SENTENCE_END = re.compile(
-    rf"(?<![{re.escape(SENTENCE_FINAL)}])([{re.escape(SENTENCE_FINAL)}]++)[{re.escape(CLOSERS)}]*+(?:\s|-\s)"
-    rf"|(?<![{SCRIPT_SENTENCE_MARKS}])[{SCRIPT_SENTENCE_MARKS}]++[{re.escape(CLOSERS)}]*+(?!-\S|\s*$)"
-)
+# before anything but a hyphen and the next sentence.
+UNJOINED_SENTENCE_END = re.compile(rf"{FINAL_MARK_RUN}(?:\s|-\s)|{SCRIPT_MARK_RUN}(?!-\S|\s*$)")
 DIVIDER_SPLIT = re.compile(r"\s?\*\*\*\s?")
 # The counting_composition prompt writes the divider as "* * *", the same Markdown divider as "***".
 COMPOSITION_DIVIDER_SPLIT = re.compile(r"\s?(?:\*\*\*|\* \* \*)\s?")
