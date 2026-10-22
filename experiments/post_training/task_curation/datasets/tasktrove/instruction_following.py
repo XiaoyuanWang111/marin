@@ -82,12 +82,13 @@ configuration. There is no canonical answer key; its absence alone is not missin
 reference_status=unknown, or a reason to downgrade a clearly answerable task.
 
 Distinguish a contradiction in the written instructions from impossibility under the checker. The shared checks count
-a run of letters, digits and combining marks, with any apostrophes and hyphens inside it, as one word, so an unbroken
-run of Han characters is one word; keyword checks match the keyword between regex word boundaries. A sentence ends at
-a Chinese, Japanese, Devanagari, Arabic, Armenian or Ethiopic sentence-final mark, and at ., !, ? or an ellipsis
-before whitespace, after any closing quotes or brackets. Outside detectable_format:sentence_hyphens, the dot of an
-abbreviation such as "Dr." ends a sentence too. The language check is approximate. Passing a check does not repair
-a bad prompt.
+a run of letters, digits and combining marks, with any apostrophes, hyphens and zero-width joiners or non-joiners
+inside it, as one word, so an unbroken run of Han characters is one word. Keyword checks find a keyword that no letter
+or digit precedes and no letter, digit or combining mark follows, so an underscore next to it does not hide it. A
+sentence ends at a Chinese, Japanese, Devanagari, Arabic, Armenian or Ethiopic sentence-final mark, and at ., !, ? or
+an ellipsis before whitespace, after any closing quotes or brackets. Outside detectable_format:sentence_hyphens, the
+dot of an abbreviation such as "Dr." ends a sentence too. The language check is approximate. Passing a check does not
+repair a bad prompt.
 
 Shared checker details: copy:repeat_phrase requires exactly N copies of the phrase, each with one word other than the
 first and last replaced. letters:letter_counting counts only the Latin letters A to Z, in either case.
