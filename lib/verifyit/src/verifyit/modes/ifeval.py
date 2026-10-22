@@ -10,13 +10,14 @@ pure stdlib: this module has to run inside every task image without an extra.
 ``language:response_language`` describes an instruction the model was given rather than a property
 that can be measured exactly, so its check is an approximation, and its docstring says so.
 
-A word is a run of letters, digits and combining marks in any script, with apostrophes, hyphens and
-zero-width joiners or non-joiners inside it, so ``don't`` and ``high-risk`` are one word each, a
-Devanagari vowel sign stays in its word, and a run of Han characters is one word. A sentence ends at
-``.``, ``!``, ``?`` or an ellipsis before whitespace, after any closing quotes or brackets, and at a
-Chinese, Japanese, Devanagari, Arabic, Armenian or Ethiopic sentence-final mark wherever it stands,
-after any closing quotes or brackets that follow it. Only ``detectable_format:sentence_hyphens``
-reads the dot of an abbreviation, such as ``Dr.`` or ``e.g.``, as no sentence end.
+A word is a letter or digit followed by any letters, digits and combining marks in any script,
+with apostrophes, hyphens and zero-width joiners or non-joiners inside it, so ``don't`` and
+``high-risk`` are one word each, a Devanagari vowel sign stays in its word, and a run of Han
+characters is one word. A sentence ends at ``.``, ``!``, ``?`` or an ellipsis before whitespace,
+after any closing quotes or brackets, and at a Chinese, Japanese, Devanagari, Arabic, Armenian
+or Ethiopic sentence-final mark wherever it stands, after any closing quotes or brackets that
+follow it. Only ``detectable_format:sentence_hyphens`` reads the dot of an abbreviation, such as
+``Dr.`` or ``e.g.``, as no sentence end.
 """
 
 import json
