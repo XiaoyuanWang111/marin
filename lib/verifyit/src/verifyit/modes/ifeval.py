@@ -202,12 +202,24 @@ def same_word(word: str, target: str) -> bool:
 
 
 def count_keyword(text: str, keyword: str) -> int:
-    """Occurrences of the keyword not preceded by a letter or digit nor followed by a letter, digit or combining mark.
+    """Occurrences of the keyword that no letter or digit precedes, directly or through combining marks, and that
+    no letter, digit or combining mark follows.
 
-    An underscore is none of these, so ``_keyword_`` and ``user_keyword`` hold the keyword.
+    An underscore is none of these, so ``_keyword_`` and ``user_keyword`` hold the keyword. Combining marks after a
+    symbol do not join the keyword to it, so an emoji with a variation selector may stand right before it.
     """
-    pattern = rf"(?<![^\W_]){re.escape(keyword)}(?!{WORD_CHARACTER})"
-    return len(re.findall(pattern, text, flags=re.IGNORECASE))
+    pattern = re.compile(rf"{re.escape(keyword)}(?!{WORD_CHARACTER})", flags=re.IGNORECASE)
+    count, position = 0, 0
+    while position <= len(text) and (found := pattern.search(text, position)):
+        start = found.start()
+        while start > 0 and unicodedata.category(text[start - 1])[0] == "M":
+            start -= 1
+        if start > 0 and text[start - 1].isalnum():
+            position = found.start() + 1
+        else:
+            count += 1
+            position = max(found.end(), found.start() + 1)
+    return count
 
 
 def contains_keyword(text: str, keyword: str, word_boundary: bool = True) -> bool:

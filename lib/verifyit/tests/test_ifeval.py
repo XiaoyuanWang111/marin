@@ -525,6 +525,18 @@ CASES = [
         "Meet me at the barn tonight.",
     ),
     (
+        "keywords:existence",
+        {"keywords": ["\u0915\u0940"]},
+        "\u0930\u093e\u092e \u0915\u0940 \u0915\u093f\u0924\u093e\u092c",
+        "\u092c\u093e\u0915\u0940 \u0938\u092c \u0920\u0940\u0915",
+    ),
+    (
+        "keywords:existence",
+        {"keywords": ["\u0926\u0940"]},
+        "\u0909\u0938\u0928\u0947 \u0915\u093f\u0924\u093e\u092c \u0926\u0940",
+        "\u092e\u0941\u091d\u0947 \u0939\u093f\u0902\u0926\u0940 \u092a\u0938\u0902\u0926 \u0939\u0948",
+    ),
+    (
         "language:response_language",
         {"language": "hi"},
         "यह अच्छा है।",
@@ -548,8 +560,18 @@ CASES = [
         ("detectable_content:number_placeholders", {"num_placeholders": 1}, "See [" + "a" * 100_000, False),
         ("detectable_format:title", {}, "<<" + "a" * 100_000, False),
         ("detectable_format:square_brackets", {}, " ".join(["[word]"] * 20_000), True),
+        ("keywords:existence", {"keywords": ["b"]}, "a" + "\u0301" * 100_000 + "b", False),
+        ("keywords:existence", {"keywords": [""]}, "Hello world.", True),
     ],
-    ids=["sentence_marks", "hyphen_marks", "open_bracket", "open_title", "many_brackets"],
+    ids=[
+        "sentence_marks",
+        "hyphen_marks",
+        "open_bracket",
+        "open_title",
+        "many_brackets",
+        "keyword_after_marks",
+        "empty_keyword",
+    ],
 )
 def test_check_of_degenerate_text_finishes_within_its_deadline(name, params, text, passed):
     assert call_bounded(CONSTRAINTS[name], text, params, timeout=5)[0] is passed
