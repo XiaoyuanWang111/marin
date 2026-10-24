@@ -47,12 +47,16 @@ def crux(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     answer = str(responses[-1])
     if "[ANSWER]" in answer and "[/ANSWER]" in answer:
         answer = answer.split("[ANSWER]", 1)[1].split("[/ANSWER]", 1)[0].strip()
-    call = re.search(r"f\(.*?\)", answer)
-    if call is not None:
-        if spec.grader.reference["direction"] == "input":
-            answer = call.group(0)
-        else:
-            answer = answer.replace(call.group(0), "").replace("=", "").replace("assert", "").strip()
+    # Split at the first "==" as CRUXEval's harness does (inference/tasks/*_prediction.py, evaluation/utils_general.py):
+    # an output answer is the text after it and an input answer is the call before it. An output answer containing
+    # f(<input>) scores 0, and so does an input answer without "f(".
+    direction = spec.grader.reference["direction"]
+    if "==" in answer:
+        answer = answer.split("==", 1)[0 if direction == "input" else 1].strip()
+    if direction == "input" and "assert f" in answer:
+        answer = "f" + answer.split("assert f", 1)[1].strip()
+    if (direction == "output" and f"f({spec.doc['input']})" in answer) or (direction == "input" and "f(" not in answer):
+        return Grade({"accuracy": 0.0}, filtered_resps=[answer])
     doc = dict(spec.doc)
     doc["test_code"] = f"{doc['code']}\nassert {doc['output']} == {answer}"
     with tempfile.TemporaryDirectory(prefix="evalchemy-crux-") as directory:
