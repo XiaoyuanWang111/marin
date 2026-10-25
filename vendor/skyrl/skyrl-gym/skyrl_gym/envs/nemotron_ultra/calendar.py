@@ -117,6 +117,8 @@ def grade_calendar(response: str, expected: dict[str, Any]) -> tuple[float, str]
         by_id = {str(event["event_id"]): event for event in events}
         if len(by_id) != len(expected):
             return 0.0, "different_number_of_events"
+        if any(not isinstance(event["start_time"], str) for event in events):
+            return 0.0, "invalid_response"
         if any(_conflicts(events, event) for event in events):
             return 0.0, "conflicting_events"
         if any(not _satisfies(by_id[event_id], expected[event_id]) for event_id in expected):

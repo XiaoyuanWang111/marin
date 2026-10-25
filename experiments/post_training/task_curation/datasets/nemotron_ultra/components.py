@@ -475,6 +475,7 @@ REPAIRED_RECIPE_VERSION = "4"
 TOOLCALL_SCHEMA_RECIPE_VERSION = "6"
 EXECUTABLE_GRADER_RECIPE_VERSION = "6"
 RECIPE_VERSIONS = {
+    "ultra_sft_step3200_calendar_v2": REPAIRED_RECIPE_VERSION,
     "ultra_sft_step3200_nvarc_transductive": REPAIRED_RECIPE_VERSION,
     "ultra_sft_step3200_structured_outputs_v2": REPAIRED_RECIPE_VERSION,
     "ultra_sft_step3200_structured_outputs_v3": REPAIRED_RECIPE_VERSION,

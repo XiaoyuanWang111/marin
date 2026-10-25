@@ -68,6 +68,8 @@ STRUCTURED_OUTPUT = ScorerClosure(
     ("openapi_schema_validator", "xmltodict", "yaml"),
 )
 
+CALENDAR = ScorerClosure({**ULTRA_BASE, **shipped(ULTRA, f"{ULTRA_ENVS}/calendar.py")})
+
 
 NVARC_RECORD = {"test_input": [[1, 2], [3, 4]], "expected_output": [[2, 3], [4, 5]]}
 NVARC_CHECK = """
@@ -98,6 +100,14 @@ record = {
 }
 reward, detail = grade_structured_output(sys.stdin.read(), record, {})
 print(json.dumps([reward, detail["error_type"]]))
+"""
+
+CALENDAR_CHECK = """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from skyrl_gym.envs.nemotron_ultra.calendar import grade_calendar
+expected = {"1": {"duration": 30, "min_time": "9am", "max_time": "5pm", "constraint": None}}
+print(json.dumps(grade_calendar(sys.stdin.read(), expected)))
 """
 
 ANSWER_EXTRACTION_CHECK = """
@@ -131,6 +141,23 @@ def test_structured_output_accepts_a_markdown_fenced_document(tmp_path: Path):
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [1.0, None]
+
+
+@pytest.mark.parametrize(
+    ("start_time", "grade"),
+    [("10am", [1.0, "pass"]), (None, [0.0, "invalid_response"]), (600, [0.0, "invalid_response"])],
+    ids=["text", "null", "number"],
+)
+def test_calendar_scores_a_start_time_by_whether_it_is_text(start_time: object, grade: list, tmp_path: Path):
+    tests = CALENDAR.stage(tmp_path)
+    result = subprocess.run(
+        (sys.executable, "-I", "-c", CALENDAR_CHECK, str(tests)),
+        input=json.dumps([{"event_id": 1, "start_time": start_time, "duration": 30}]),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == grade
 
 
 @pytest.mark.parametrize(
