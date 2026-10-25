@@ -9,9 +9,16 @@ def test_math_answers_equivalent_accepts_symbolically_equal_latex():
     assert answer_equivalence.math_answers_equivalent(r"\frac{1}{2}", ["0.5"])
 
 
-def test_math_answers_equivalent_rejects_vacuous_symbol_free_equation_pairs():
+def test_math_answers_equivalent_rejects_vacuous_matches_to_symbol_free_relations():
     assert not answer_equivalence.math_answers_equivalent(r"$I_{i}(0) = I_{e}(0)$", [r"$I_{e}(0)=\gamma I_{i}(0)$"])
     assert not answer_equivalence.math_answers_equivalent("$1 = 2$", ["$3 = 4$"])
+    assert not answer_equivalence.math_answers_equivalent("x = x", [r"$I_{e}(0)=\gamma I_{i}(0)$"])
+    assert not answer_equivalence.math_answers_equivalent("x = x + 1", [r"$I_{e}(0)=\gamma I_{i}(0)$"])
+
+
+def test_math_answers_equivalent_accepts_the_reference_symbol_free_relation():
+    assert answer_equivalence.math_answers_equivalent(r"I_{e}(0)=\gamma I_{i}(0)", [r"$I_{e}(0)=\gamma I_{i}(0)$"])
+    assert answer_equivalence.math_answers_equivalent(r"\gamma I_{i}(0) = I_{e}(0)", [r"$I_{e}(0)=\gamma I_{i}(0)$"])
 
 
 def test_math_answers_equivalent_keeps_nonvacuous_symbol_free_and_symbolic_matches():

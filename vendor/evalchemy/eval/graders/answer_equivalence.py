@@ -87,6 +87,15 @@ def _is_symbol_free_relation(parsed: Sequence[object]) -> bool:
     return bool(relations) and all(isinstance(value, Relational) and not value.free_symbols for value in relations)
 
 
+def _same_relations(candidate: Sequence[object], reference: Sequence[object]) -> bool:
+    """Return whether the candidate holds the reference's relations, each identical or reversed (`a < b` as `b > a`)."""
+    values = [value for value in candidate if not isinstance(value, str)]
+    relations = [value for value in reference if not isinstance(value, str)]
+    return len(values) == len(relations) and all(
+        value in (relation, relation.reversed) for value, relation in zip(values, relations)
+    )
+
+
 def math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[str]) -> bool:
     """Return whether the candidate is mathematically equivalent to any reference."""
     candidate = normalize_final_answer(candidate_answer)
@@ -94,7 +103,11 @@ def math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[s
     for reference in reference_answers:
         parsed_reference = parse(f"\\boxed{{{reference}}}")
         if parsed_candidate and parsed_reference:
-            if _is_symbol_free_relation(parsed_candidate) and _is_symbol_free_relation(parsed_reference):
+            if _is_symbol_free_relation(parsed_reference):
+                # verify matches such a reference to any equation that solves to no value, such as `x = x`, and to
+                # other relations without free symbols, so require the reference's own relations.
+                if _same_relations(parsed_candidate, parsed_reference):
+                    return True
                 continue
             if verify(gold=parsed_reference, target=parsed_candidate):
                 return True
