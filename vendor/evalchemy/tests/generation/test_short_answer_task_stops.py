@@ -106,6 +106,31 @@ def test_short_answer_task_scores_marked_final_content_after_reasoning(task_name
 
 
 @pytest.mark.parametrize("task_name", _TASKS)
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            {
+                "content": "Answer: 14 December 1972",
+                "reasoning_content": (
+                    "The prompt lists six questions.\nQuestion: When did Apollo 17 return?\nIn 1972."
+                ),
+            },
+            "14 December 1972",
+        ),
+        ({"content": "\n\nLeeds", "reasoning_content": "The answer is York."}, "Leeds"),
+        ({"content": None, "reasoning_content": "Answer: Leeds"}, "Leeds"),
+    ],
+)
+def test_short_answer_task_extracts_from_final_content_before_reasoning(task_name, message, expected):
+    assert _filtered_response(task_name, message) == expected
+
+
+def test_short_answer_extractor_collapses_spacing_inside_the_answer():
+    assert extract_short_answer("Answer: New\u202fZealand").answer == "New Zealand"
+
+
+@pytest.mark.parametrize("task_name", _TASKS)
 def test_short_answer_task_uses_only_shared_turn_boundaries(task_name):
     config = _task_config(task_name)
     stops = config["generation_kwargs"]["until"]

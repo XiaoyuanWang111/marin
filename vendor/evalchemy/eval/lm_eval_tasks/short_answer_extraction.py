@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 import re
 
+from eval.completion_response import CompletionClassification, CompletionText
 from eval.generation_stops import truncate_at_stop
 
 INVALID_SHORT_ANSWER = "[invalid]"
@@ -50,9 +51,21 @@ _INVALID_EXTRACTION = ShortAnswerExtraction(
 )
 
 
+def _final_content(response: object) -> object:
+    """Return final content, or the reasoning of a reasoning-only reply."""
+    if not isinstance(response, CompletionText):
+        return response
+    completion = response.response
+    if completion.content:
+        return completion.content
+    if completion.classification == CompletionClassification.REASONING_ONLY:
+        return completion.reasoning_content or ""
+    return ""
+
+
 def _clean_answer(answer: str) -> str:
-    """Remove answer presentation syntax without changing answer words."""
-    answer = answer.strip().rstrip(".").strip()
+    """Remove presentation syntax and collapse spacing without changing answer words."""
+    answer = " ".join(answer.split()).rstrip(".").strip()
     while marker := _LEADING_ANSWER_MARKER.match(answer):
         answer = answer[marker.end() :].strip()
     if len(answer) >= 2 and (answer[0], answer[-1]) in {("(", ")"), ("[", "]")}:
@@ -88,8 +101,11 @@ def extract_short_answer(response: object) -> ShortAnswerExtraction:
 
     The last answer signal wins so a completion can reason, revise, and still
     provide a final answer. Bare answers are limited to a short final line to
-    avoid scoring an unstructured transcript as an answer.
+    avoid scoring an unstructured transcript as an answer. A completion's
+    reasoning is read only when it has no final content and stopped before
+    the token limit.
     """
+    response = _final_content(response)
     if not isinstance(response, str):
         return _INVALID_EXTRACTION
 
@@ -112,6 +128,7 @@ def extract_short_answer(response: object) -> ShortAnswerExtraction:
 
 def extract_marked_short_answer(response: object) -> str:
     """Return the last line-level marked answer or an invalid scoring value."""
+    response = _final_content(response)
     if not isinstance(response, str):
         return INVALID_SHORT_ANSWER
     matches = list(_ANSWER_MARKER.finditer(truncate_at_stop(response)))
