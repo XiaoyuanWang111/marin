@@ -324,8 +324,7 @@ def _backfill_one(results_path: str, records: list[EvalRunRecord]) -> SweepOutco
     # partway would read as current and never be retried. The seal is what says it finished.
     if reader.schema_version(ARCHIVE_SAMPLES_TABLE) == SCHEMA_VERSION and reader.is_sealed():
         return SweepOutcome("already_current", "current")
-    tasks, max_eval_instances = _archive_eval_config(records)
-    written = export_lm_eval_samples(results_path, tasks=tasks, max_eval_instances=max_eval_instances).samples
+    written = export_lm_eval_samples(results_path, tasks=_archive_tasks(records)).samples
     return SweepOutcome("exported", f"{written} sample(s)")
 
 
@@ -407,24 +406,19 @@ def rebuild_samples(results_paths: tuple[str, ...], prefixes: tuple[str, ...], w
     _sweep_archives(selected_archives(_resolve_prefixes(prefixes, results_paths), results_paths), workers, _rebuild_one)
 
 
-def _archive_eval_config(records: list[EvalRunRecord]) -> tuple[tuple[EvalTaskRef, ...], int | None]:
-    """Task declarations and cap from the newest Evalchemy record for an archive."""
+def _archive_tasks(records: list[EvalRunRecord]) -> tuple[EvalTaskRef, ...]:
+    """Task declarations from the newest Evalchemy record for an archive."""
     evalchemy_records = [record for record in records if record.evaluation.evalchemy is not None]
     if not evalchemy_records:
-        return (), None
-    record = max(evalchemy_records, key=lambda candidate: candidate.created_at or "")
-    evalchemy = record.evaluation.evalchemy
-    if evalchemy is None:
-        raise ValueError(f"record {record.run_id} has no Evalchemy configuration")
-    return record.evaluation.tasks, evalchemy.max_eval_instances
+        return ()
+    return max(evalchemy_records, key=lambda candidate: candidate.created_at or "").evaluation.tasks
 
 
 def _rebuild_one(results_path: str, records: list[EvalRunRecord]) -> SweepOutcome:
     """Rebuild one archive from its preserved sources, or report that it has none."""
     if not preserved_sample_sources(results_path):
         return SweepOutcome("no_sources", "no preserved sources")
-    tasks, _max_eval_instances = _archive_eval_config(records)
-    written = rebuild_lm_eval_samples(results_path, tasks=tasks)
+    written = rebuild_lm_eval_samples(results_path, tasks=_archive_tasks(records))
     return SweepOutcome("rebuilt", f"{written} sample(s)")
 
 

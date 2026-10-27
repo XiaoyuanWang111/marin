@@ -1298,6 +1298,30 @@ def test_upgrade_format_prefix_migrates_only_sealed_archives(tmp_path, monkeypat
     assert selection["missing_archive"] == 1
 
 
+def test_backfill_samples_exports_recorded_evalchemy_archive(tmp_path, monkeypatch):
+    results = tmp_path / "evals" / "run-a" / "results"
+    source = _write_jsonl(results, [_lm_eval_row(0, "none", 1.0, "4"), _lm_eval_row(1, "none", 0.0, "5")])
+    (source.parent / "results_20260807.json").write_text(
+        json.dumps({"results": {"gsm8k": {"exact_match": 0.5}}, "n-samples": {"gsm8k": {"original": 2}}})
+    )
+    record = SimpleNamespace(
+        results_path=str(results),
+        run_id="run-a",
+        created_at="2026-10-01T00:00:00+00:00",
+        evaluation=SimpleNamespace(evalchemy=SimpleNamespace(max_eval_instances=2), tasks=(EvalTaskConfig("gsm8k", 5),)),
+    )
+    monkeypatch.setattr("experiments.evaluation.migrations.cli.list_records", lambda _: [record])
+
+    result = CliRunner().invoke(
+        migrations_cli,
+        ["backfill-samples", "--prefix", str(tmp_path / "evals"), "--workers", "1"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output.splitlines()[-1]) == {"exported": 1}
+    assert archive_sample_count(str(results)) == 2
+
+
 def test_migrate_legacy_run_into_archive(tmp_path):
     results = str(tmp_path / "run" / "results")
     fs, _ = url_to_fs(results)
