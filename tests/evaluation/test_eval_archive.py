@@ -41,7 +41,7 @@ from marin.evaluation.lm_eval_samples import (
     summarize_native_eval_samples,
     task_coverage,
 )
-from marin.evaluation.records import DEFAULT_SCAN_PREFIXES, EvalTaskRef, TaskCoverage
+from marin.evaluation.records import DEFAULT_SCAN_PREFIXES, EVALCHEMY_INFRASTRUCTURE_ERROR, EvalTaskRef, TaskCoverage
 from rigging.filesystem.storage_path import StoragePath
 
 from experiments.evaluation.migrations.cli import (
@@ -1127,6 +1127,35 @@ def test_rebuild_preserves_native_evalchemy_repeat_keys(tmp_path):
     assert rebuild_lm_eval_samples(results) == 3
     archived = ReadView(results).scan("samples").to_pylist(maps_as_pydicts="strict")
     assert {(row["doc_id"], row["trial_id"]) for row in archived} == {("0", "0"), ("0", "1"), ("0", "2")}
+
+
+@pytest.mark.parametrize("failed_samples_have_grade", [True, False])
+def test_rebuild_counts_evalchemy_timeouts_as_infrastructure_errors(tmp_path, failed_samples_have_grade):
+    results = str(tmp_path / "results")
+    rows = [_lm_eval_row(0, "none", 1.0, "4")]
+    for doc_id, category in ((1, "AgentTimeoutError"), (2, "model_transport")):
+        # Evalchemy records a failed generation as an empty response tagged with its failure category.
+        row = {**_lm_eval_row(doc_id, "none", 0.0, ""), "failure_category": category}
+        if not failed_samples_have_grade:
+            del row["exact_match"]
+            row["metrics"] = []
+        rows.append(row)
+    store = EvaluationStore.open(results, writer_id="native-evalchemy-test")
+    try:
+        store.add_source_artifact(
+            "evalchemy/gsm8k_5shot/native/samples_gsm8k_native.jsonl",
+            ("\n".join(json.dumps(row) for row in rows) + "\n").encode(),
+            content_type="application/x-ndjson",
+        )
+        store.seal()
+    finally:
+        store.close()
+
+    assert rebuild_lm_eval_samples(results) == 3
+    samples = [sample_from_archive_row(row) for row in ReadView(results).scan("samples").to_pylist()]
+    assert task_coverage(samples, n_benchmark=3, n_attempted=3) == TaskCoverage(
+        n_benchmark=3, n_attempted=3, n_scored=1, n_correct=1, errors={EVALCHEMY_INFRASTRUCTURE_ERROR: 2}
+    )
 
 
 def test_rebuild_chat_native_samples_from_recorded_task_declaration(tmp_path):

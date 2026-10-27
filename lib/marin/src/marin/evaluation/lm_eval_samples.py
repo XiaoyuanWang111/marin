@@ -92,9 +92,12 @@ _CONTENT_TYPES = {
 # :func:`is_scratch_artifact`.
 _SCRATCH_SEGMENT = re.compile(r"(?:^|/)tmp[a-z0-9_]{6,}/")
 _INFRASTRUCTURE_ERROR_PREFIX = f"[{EVALCHEMY_INFRASTRUCTURE_ERROR}]"
-# The pinned Evalchemy normalizer marks these failures in its native sample table. Preserve that
-# decision when Marin rebuilds the same rows from Evalchemy's raw source artifacts.
-_INFRASTRUCTURE_FAILURE_CATEGORIES = frozenset({"agent_timeout", "model_transport", "grader_infrastructure"})
+# Evalchemy's FailureCategory values for a failed generation.
+_GENERATION_FAILURE_CATEGORIES = frozenset({"AgentTimeoutError", "model_transport"})
+# Evalchemy's normalizer marks failed generations as infrastructure errors in its native sample table;
+# the versions that preserved raw sample sources also marked grader_infrastructure. Preserve that
+# decision when Marin rebuilds the same rows from those sources.
+_INFRASTRUCTURE_FAILURE_CATEGORIES = _GENERATION_FAILURE_CATEGORIES | {"grader_infrastructure"}
 EVALCHEMY_SOURCE_ROOT = PurePosixPath(prefix_join(SOURCES_PREFIX, "evalchemy"))
 EVALCHEMY_NATIVE_SOURCE_DIR = "native"
 EVALCHEMY_RESULTS_TABLE = "evalchemy_results"
@@ -870,7 +873,7 @@ def _has_partial_evalchemy_scores(document: dict) -> bool:
             return False
         if outcome.get("status") == "succeeded":
             continue
-        if outcome.get("failure", {}).get("category") not in {"model_transport", "AgentTimeoutError"}:
+        if outcome.get("failure", {}).get("category") not in _GENERATION_FAILURE_CATEGORIES:
             return False
     return True
 
