@@ -18,18 +18,20 @@ def extract_answer(text: str) -> Optional[str]:
         else:
             return None
     text = final_response_text(text)
+    # The three patterns and their case sensitivity follow TIGER-Lab's reference extractor
+    # (TIGER-AI-Lab/MMLU-Pro evaluate_from_api.py), so "the answer is about 56%" does not read as A.
     pattern = r"answer is \(?([A-J])\)?"
-    match = re.search(pattern, text, re.IGNORECASE)
+    match = re.search(pattern, text)
     if match:
-        return match.group(1).upper()
+        return match.group(1)
     else:
         return extract_again(text)
 
 
 def extract_again(text: str) -> Optional[str]:
-    match = re.search(r"Answer:\s*([A-J])", text, re.IGNORECASE)
+    match = re.search(r".*[aA]nswer:\s*([A-J])", text)
     if match:
-        return match.group(1).upper()
+        return match.group(1)
     else:
         return extract_final(text)
 

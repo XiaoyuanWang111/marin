@@ -21,11 +21,20 @@ def test_mmlu_choice_uses_the_final_answer_marker():
     ("B. This is a valid explanation.", "B"),
     ("A was plausible.\nB. This is a valid explanation.", "B"),
     ("b. This is a valid explanation.", None),
-    ("The ANSWER IS (c). Later mention B.", "C"),
-    ("aNsWeR: d. Later mention B.", "D"),
+    ("The ANSWER IS (c). Later mention B.", "B"),
+    ("aNsWeR: d. Later mention B.", "B"),
     ("", None),
+    # TIGER-Lab's reference extractor matches "answer is" case-sensitively.
+    ("The answer is about 56%, so the answer is (C).", "C"),
+    ("the answer is (b). Later mention D.", "D"),
+    # Its "Answer:" fallback takes the last match on the first line that has one.
+    ("Answer: B at first, but the final answer: C", "C"),
+    ("answer: c", None),
+    # The same reply reads C with its think markers kept and with them removed.
+    ("<|start_think|>The answer is about 56%, not (B).<|end_think|>The answer is (C).", "C"),
+    ("The answer is about 56%, not (B).The answer is (C).", "C"),
 ])
-def test_mmlu_choice_preserves_original_case_sensitive_final_letter(response, answer):
+def test_mmlu_choice_matches_the_reference_extractor(response, answer):
     spec = EvalSpec(task="MMLUPro", source=SourceRef("local"), source_id="1", ordinal=0,
                     requests=(), grader=GraderSpec("mmlu_choice"), target=answer or "B")
 
