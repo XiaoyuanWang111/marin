@@ -13,6 +13,11 @@ graders, streaming execution, FineStore output and resume support. Marin owns
 serving and evaluation orchestration. A local GraphWalks adapter adds the pinned
 `openai/graphwalks` dataset to the shared execution and grading flow, selecting
 examples with the served tokenizer and preserving their output budgets.
+The GSM8K grader incorporates the upstream
+[boxed-answer](https://github.com/marin-community/evalchemy/commit/3c5e147442be3f73d18d37ce41811595ea5a848d),
+[annotated-answer](https://github.com/marin-community/evalchemy/commit/b0f6fcea5f6974d049afb1867952f9931b71bc48)
+and [pass-rate](https://github.com/marin-community/evalchemy/commit/a993b52543c493e58956be94ed6d3420b94143c0)
+corrections.
 Database tracking, Curator dispatch,
 W&B reporting, standalone serving launchers, benchmark websites and unused
 leaderboard outputs have been removed. Nested benchmark packages retain only

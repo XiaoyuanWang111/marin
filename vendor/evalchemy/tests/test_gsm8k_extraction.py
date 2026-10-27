@@ -2,7 +2,7 @@
 
 import pytest
 
-from eval.lm_eval_tasks.gsm8k.utils import gsm8k_flexible_extraction_filter
+from eval.lm_eval_tasks.gsm8k.utils import extract_gsm8k_flexible_answer, gsm8k_flexible_extraction_filter
 from eval.graders.gsm8k import extract_flexible
 from lm_eval.api.instance import Instance
 from lm_eval.filters import build_filter_ensemble
@@ -31,6 +31,11 @@ def _flexible_extract(response: str) -> tuple[Instance, str]:
         ("The calculation used 9 and 2. Final answer: 18.", "18"),
         ("\\boxed{-3.5}", "-3.5"),
         ("\\boxed{1,200}", "1,200"),
+        ("\\boxed{\\$235.00}", "\\$235.00"),
+        ("\\boxed{24\\%}", "24\\%"),
+        ("\\boxed{448 mL}", "448 mL"),
+        ("\\boxed{11:30}", "11:30"),
+        ("\\boxed{\\frac{1}{2}}", "\\frac{1}{2}"),
         ("\\boxed{18}. The calculation used 9 and 2.", "18"),
         ("The answer is 12.\nQuestion: unrelated question with 8088 rows", "12"),
         ("The answer is 12.\nQ: unrelated question with 8088 rows", "12"),
@@ -49,3 +54,7 @@ def test_shared_gsm8k_extractor_uses_the_next_turn_boundary():
     response = "The answer is 12.\nQ: unrelated question with 8088 rows"
 
     assert extract_flexible(response) == "12."
+
+
+def test_flexible_extract_keeps_unboxed_numeric_fallback():
+    assert extract_gsm8k_flexible_answer("The final cost is $2400.") == "$2400"
