@@ -8,6 +8,8 @@ from eval.graders.minerva_math import is_equiv, normalize_final_answer
 
 _BARE_NUMBER = r"-?\d[\d,]*(?:\.\d+)?"
 _NUMBER = rf"\$?{_BARE_NUMBER}"
+# LaTeX `{,}` and `\,`, and figure, thin, narrow no-break and no-break spaces between digit groups.
+_DIGIT_GROUP_SEPARATOR = re.compile(r"(?<=\d)(?:\{,\}|\\,|[\u2007\u2009\u202f\u00a0])(?=\d{3}(?!\d))")
 _FINAL_ANSWER = re.compile(rf"(?i)\b(?:final\s+answer|answer)\s*(?:is|:|=)?\s*({_NUMBER})")
 _NUMERIC_CANDIDATE = re.compile(_NUMBER)
 _ANNOTATED_SCALAR = re.compile(
@@ -31,6 +33,7 @@ def extract_gsm8k_flexible_answer(response: str) -> str:
     boxed = extract_final_boxed_answer(response)
     if boxed:
         return boxed.strip()
+    response = _DIGIT_GROUP_SEPARATOR.sub(",", response).replace("\\$", "$").replace("\\!", "")
     for pattern in (_FINAL_ANSWER, _NUMERIC_CANDIDATE):
         matches = pattern.findall(response)
         if matches:
