@@ -86,6 +86,8 @@ serve:
     \ endif -%}\n\n"
 generation:
   max_gen_toks: 16384
+  extra_gen_kwargs:
+    skip_special_tokens: "false"
 agent:
   agent_kwargs:
     thinking_format: chat-template

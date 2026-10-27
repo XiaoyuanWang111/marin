@@ -25,6 +25,9 @@ serve:
   - --enable-expert-parallel
   - --model-loader-extra-config
   - '{"distributed":true}'
+generation:
+  extra_gen_kwargs:
+    skip_special_tokens: "false"
 
 # The in-repo template maps enable_thinking to its /think soft-switch. Benchmark configs select the
 # policy mode explicitly; model-default benchmarks leave the switch to the model.

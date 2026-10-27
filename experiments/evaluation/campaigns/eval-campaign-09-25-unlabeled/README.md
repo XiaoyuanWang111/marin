@@ -39,6 +39,11 @@ concurrency slot. A transport attempt may use that full window; retrying does no
 K2 is limited to four after its 16-request runs saturated serving and produced mostly timed-out
 generations. Effective concurrency is recorded in each run's Evalchemy provenance.
 
+vLLM removes special tokens from replies by default, including the `<|start_think|>` and
+`<|end_think|>` delimiters of Marin's tokenizer. The Grug and Snowball model configs keep them with
+`generation.extra_gen_kwargs.skip_special_tokens: "false"`, which applies to Evalchemy requests only.
+Graders that cut at the last `<|end_think|>`, such as MMLU-Pro's, then see only the final answer.
+
 Pass `--version LABEL` only when a submitter-controlled cohort label is useful. The launcher forwards
 the label to Marin unchanged. It remains provenance metadata and does not alter the conformance
 boundary above.
