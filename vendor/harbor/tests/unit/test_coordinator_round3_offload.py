@@ -65,10 +65,9 @@ class _ThreadRecordingWriter:
 def test_acount_total_tokens_is_a_coroutine() -> None:
     import asyncio
 
-    # The async callers (_check_proactive_summarization + the hint path) must be
-    # able to `await` it; the sync method is kept intact for _unwind_* callers.
+    # The async callers (_check_proactive_summarization, the hint path and
+    # context recovery) must be able to `await` it.
     assert asyncio.iscoroutinefunction(Terminus2._acount_total_tokens)
-    assert not asyncio.iscoroutinefunction(Terminus2._count_total_tokens)
 
 
 @pytest.mark.unit
@@ -92,18 +91,9 @@ async def test_acount_total_tokens_uses_truly_async_client() -> None:
 
     fake_async_client = SimpleNamespace(post=_recording_post)
 
-    def _boom(*a, **k):  # sync client must NOT be used on the async hot path
-        raise AssertionError("sync /tokenize client used on the async hot path")
-
-    with (
-        mock.patch(
-            "harbor.agents.terminus_2.terminus_2.shared_async_tokenize_client",
-            return_value=fake_async_client,
-        ),
-        mock.patch(
-            "harbor.agents.terminus_2.terminus_2._get_shared_tokenize_client",
-            side_effect=_boom,
-        ),
+    with mock.patch(
+        "harbor.agents.terminus_2.terminus_2.shared_async_tokenize_client",
+        return_value=fake_async_client,
     ):
         result = await agent._acount_total_tokens(chat)
 

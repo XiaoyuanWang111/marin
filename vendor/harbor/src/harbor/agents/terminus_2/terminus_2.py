@@ -4,7 +4,6 @@ import json
 import math
 import os
 import shlex
-import threading as _threading
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -84,31 +83,6 @@ from tenacity import (
 )
 from upath import UPath
 
-# Reuse the HTTP connection pool across trials and token-counting threads.
-_TOKENIZE_HTTP_CLIENT: httpx.Client | None = None
-_TOKENIZE_HTTP_CLIENT_LOCK = _threading.Lock()
-
-
-def _get_shared_tokenize_client(timeout: float = 10.0) -> "httpx.Client":  # noqa: F821
-    """Return the process-wide pooled httpx client used for vLLM `/tokenize`.
-
-    Lazily constructs a single ``httpx.Client`` (one SSL context, kept-alive
-    connection pool) reused across all trials/turns instead of building a fresh
-    client + SSL context per call. Thread-safe: the coordinator may drive this
-    from worker threads via ``asyncio.to_thread``.
-
-    Kept for the SYNC ``_count_total_tokens`` callers (the summarize / context
-    -fallback ``_unwind_messages_to_free_tokens`` path). The per-turn RL hot path
-    uses the shared async client in ``harbor.llms.vllm_tokenization``.
-    """
-    global _TOKENIZE_HTTP_CLIENT
-    if _TOKENIZE_HTTP_CLIENT is None:
-        with _TOKENIZE_HTTP_CLIENT_LOCK:
-            if _TOKENIZE_HTTP_CLIENT is None:
-                _TOKENIZE_HTTP_CLIENT = httpx.Client(timeout=timeout)
-    return _TOKENIZE_HTTP_CLIENT
-
-
 OPENAI_CHAT_REPLY_PRIMING_TOKENS = 3
 OPENAI_CHAT_TOKENS_PER_MESSAGE = 3
 
@@ -121,18 +95,6 @@ OPENAI_CHAT_TOKENS_PER_MESSAGE = 3
 )
 async def _server_token_count(url: str, payload: dict[str, Any]) -> int:
     response = await shared_async_tokenize_client().post(url, json=payload)
-    response.raise_for_status()
-    return int(response.json()["count"])
-
-
-@retry(
-    retry=retry_if_exception(is_retryable_tokenize_error),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, max=4),
-    reraise=True,
-)
-def _sync_server_token_count(url: str, payload: dict[str, Any]) -> int:
-    response = _get_shared_tokenize_client().post(url, json=payload)
     response.raise_for_status()
     return int(response.json()["count"])
 
@@ -856,59 +818,6 @@ class Terminus2(BaseAgent):
             episode_logging_dir / "response.txt",
         )
 
-    def _count_total_tokens(
-        self,
-        chat: Chat,
-        extra_messages: list[dict[str, Any]] | None = None,
-    ) -> int:
-        """Count total tokens across all messages in the chat.
-
-        Prefers vLLM's `/tokenize` endpoint so the count matches what
-        vLLM applies at serve time (same BPE, same chat template). Falls
-        back to the local tiktoken estimate when no vLLM api_base is
-        available — e.g. an OpenAI-hosted backend.
-
-        ``extra_messages`` (e.g. a summary prompt appended to the retained
-        history only for the request) are included in the count so budget
-        accounting matches the real request size.
-
-        Local estimates use an explicitly configured tokenizer_encoding or
-        tiktoken's encoder for recognized OpenAI models. Custom served models
-        should use the server's tokenizer and chat template for exact counts.
-        """
-        # No messages yet (e.g. the proactive-summarization check on the very
-        # first episode, before the initial prompt has been appended to the
-        # chat): the token count is trivially 0. Short-circuit BEFORE probing
-        # vLLM — handing `/tokenize` an empty `messages: []` crashes it. HF's
-        # apply_chat_template indexes `conversation[0]` (tokenization_utils_base)
-        # before its own empty-guard runs, which vLLM re-raises as a ValueError
-        # and fails the request. Never dispatch an empty-messages request.
-        if not chat.messages and not extra_messages:
-            return 0
-
-        prep = self._prep_tokenize_request(chat, extra_messages)
-        if prep is not None:
-            url, payload = prep
-            try:
-                return _sync_server_token_count(url, payload)
-            except httpx.HTTPStatusError as error:
-                if error.response.status_code == 404:
-                    try:
-                        return self._token_counter_fallback(chat, extra_messages)
-                    except Exception as fallback_error:
-                        raise ContextManagementInfrastructureError(
-                            f"Could not count prompt tokens through /tokenize; local fallback failed: {fallback_error}"
-                        ) from error
-                raise ContextManagementInfrastructureError(
-                    "Could not count prompt tokens through /tokenize"
-                ) from error
-            except Exception as error:
-                raise ContextManagementInfrastructureError(
-                    "Could not count prompt tokens through /tokenize"
-                ) from error
-
-        return self._token_counter_fallback(chat, extra_messages)
-
     def _prep_tokenize_request(
         self,
         chat: Chat,
@@ -918,9 +827,7 @@ class Terminus2(BaseAgent):
 
         Returns ``None`` when the model isn't served by a vLLM ``api_base``
         (e.g. an OpenAI-hosted backend), in which case the caller falls back to
-        the local token counter. Shared verbatim by the sync (``_count_total_tokens``)
-        and truly-async (``_acount_total_tokens``) paths so the request shape /
-        `/v1`-stripping stays identical.
+        the local token counter.
 
         ``extra_messages`` are appended to ``chat.messages`` in the payload so a
         caller can count the exact request size — e.g. the summary prompt that is
@@ -994,12 +901,19 @@ class Terminus2(BaseAgent):
         ``httpx.AsyncClient`` POST ``await``-ed on the loop lets all 169 probes
         be in-flight at once (each yields during the network wait), instead of
         queueing behind 32 worker threads. One pooled client per event loop (see
-        ``_get_shared_async_tokenize_client``) — reused for the whole run.
+        ``shared_async_tokenize_client``) — reused for the whole run.
 
-        The sync ``_count_total_tokens`` is kept intact for the remaining
-        NON-async callers (``_unwind_messages_to_free_tokens`` on the summarize /
-        context-fallback path, which is OFF in RL).
+        Context recovery (``_unwind_messages_to_free_tokens`` and the handoff
+        checks) counts here too, so a slow or failing ``/tokenize`` yields the
+        loop to the other trials instead of blocking them.
         """
+        # No messages yet (e.g. the proactive-summarization check on the very
+        # first episode, before the initial prompt has been appended to the
+        # chat): the token count is trivially 0. Short-circuit BEFORE probing
+        # vLLM — handing `/tokenize` an empty `messages: []` crashes it. HF's
+        # apply_chat_template indexes `conversation[0]` (tokenization_utils_base)
+        # before its own empty-guard runs, which vLLM re-raises as a ValueError
+        # and fails the request. Never dispatch an empty-messages request.
         if not chat.messages and not extra_messages:
             return 0
 
@@ -1066,7 +980,7 @@ class Terminus2(BaseAgent):
             f"{omitted_bytes} interior bytes omitted ...]\n{last_portion}"
         )
 
-    def _unwind_messages_to_free_tokens(
+    async def _unwind_messages_to_free_tokens(
         self,
         chat: Chat,
         target_free_tokens: int,
@@ -1081,7 +995,9 @@ class Terminus2(BaseAgent):
         context_limit = self._llm.get_model_context_limit()
 
         while True:
-            current_tokens = self._count_total_tokens(chat, extra_request_messages)
+            current_tokens = await self._acount_total_tokens(
+                chat, extra_request_messages
+            )
             free_tokens = context_limit - current_tokens
 
             if free_tokens >= target_free_tokens:
@@ -1093,7 +1009,7 @@ class Terminus2(BaseAgent):
             chat._messages = trimmed_messages
 
         chat.reset_response_chain()
-        free_tokens = context_limit - self._count_total_tokens(
+        free_tokens = context_limit - await self._acount_total_tokens(
             chat, extra_request_messages
         )
         self.logger.debug(
@@ -1317,7 +1233,7 @@ class Terminus2(BaseAgent):
                         reserved_output=reserve,
                         progress=progress,
                     )
-                    if self._handoff_has_required_gap(chat, handoff):
+                    if await self._handoff_has_required_gap(chat, handoff):
                         return handoff, refs
                     raise ContextLengthExceededError(
                         "The complete generated handoff does not leave enough "
@@ -1402,7 +1318,7 @@ class Terminus2(BaseAgent):
             if summary_output_exhausted
             else _SUMMARY_FAILURE_MARKER
         )
-        handoff = self._bounded_recovery_handoff(
+        handoff = await self._bounded_recovery_handoff(
             chat=chat,
             original_messages=original_messages,
             source=source,
@@ -1452,7 +1368,7 @@ class Terminus2(BaseAgent):
             f"{heading}:\n{content}" for heading, content in sections if content
         )
 
-    def _bounded_recovery_handoff(
+    async def _bounded_recovery_handoff(
         self,
         *,
         chat: Chat,
@@ -1476,7 +1392,7 @@ class Terminus2(BaseAgent):
         while max_bytes >= _OVERLONG_SUMMARY_MIN_BYTES:
             excerpt = self._limit_output_length(source, max_bytes=max_bytes)
             handoff = f"{excerpt}\n\n{marker}"
-            used_tokens = self._count_total_tokens(
+            used_tokens = await self._acount_total_tokens(
                 chat, extra_messages=[{"role": "user", "content": handoff}]
             )
             if context_limit - used_tokens >= required_gap:
@@ -1491,13 +1407,13 @@ class Terminus2(BaseAgent):
             "The bounded summary fallback could not leave enough context to resume."
         )
 
-    def _handoff_has_required_gap(self, chat: Chat, handoff: str) -> bool:
+    async def _handoff_has_required_gap(self, chat: Chat, handoff: str) -> bool:
         context_limit = self._llm.get_model_context_limit()
         required_gap = min(
             max(RESERVED_SUMMARY_OUTPUT, self._proactive_summarization_threshold),
             max(1, context_limit // 2),
         )
-        used_tokens = self._count_total_tokens(
+        used_tokens = await self._acount_total_tokens(
             chat, extra_messages=[{"role": "user", "content": handoff}]
         )
         return context_limit - used_tokens >= required_gap
@@ -1601,7 +1517,7 @@ Be comprehensive and detailed. The next agent needs to understand everything
         # that same reserve as an explicit max_tokens on every summary
         # subagent call below. Provider rejection remains the final admission
         # authority and can trim the copied history further.
-        self._unwind_messages_to_free_tokens(
+        await self._unwind_messages_to_free_tokens(
             chat,
             target_free_tokens=reserved_output,
             extra_request_messages=summary_overhead_messages,
@@ -1967,7 +1883,7 @@ so ask everything you need to know."""
                 pending_prompt=summary_prompt,
                 session=request_context.session,
             )
-            compact_prompt = self._bounded_recovery_handoff(
+            compact_prompt = await self._bounded_recovery_handoff(
                 chat=chat,
                 original_messages=original_messages,
                 source=recovery_state,

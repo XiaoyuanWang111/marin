@@ -21,18 +21,13 @@ other ``to_thread`` user. These tests lock the current fixes:
   - ``Terminus2._persist_trajectory`` and ``_split_trajectory_on_summarization``
     perform NO storage write on the caller thread — serialization + write run
     on the bounded background artifact writer;
-  - ``OpenAILLM.get_model_context_limit`` memoizes its result -> no repeated HTTP;
-  - ``Terminus2._count_total_tokens`` reuses ONE process-wide pooled httpx
-    client instead of constructing a client + SSL context per call.
+  - ``OpenAILLM.get_model_context_limit`` memoizes its result -> no repeated HTTP.
 """
 
 import threading
-from types import SimpleNamespace
-from unittest import mock
 
 import pytest
 from harbor.agents.terminus_2 import terminus_2 as t2
-from harbor.agents.terminus_2.terminus_2 import Terminus2
 from harbor.llms.openai_llm import OpenAILLM
 from harbor.utils.artifact_writer import ArtifactWriter
 
@@ -139,43 +134,3 @@ def test_get_model_context_limit_does_not_cache_fallback() -> None:
     llm = OpenAILLM(model_name="test-integration/no-base")  # no api_base -> probe None
     assert llm.get_model_context_limit() == 1000000
     assert getattr(llm, "_cached_context_limit", None) is None
-
-
-# ── site 3: shared pooled httpx client for /tokenize (no per-call SSL ctx) ─────
-
-
-@pytest.mark.unit
-def test_get_shared_tokenize_client_is_a_singleton() -> None:
-    t2._TOKENIZE_HTTP_CLIENT = None  # reset module-level cache for a clean assert
-    c1 = t2._get_shared_tokenize_client()
-    c2 = t2._get_shared_tokenize_client()
-    assert c1 is c2, "tokenize client is rebuilt per call (fresh SSL context)"
-
-
-@pytest.mark.unit
-def test_count_total_tokens_uses_shared_client_not_fresh_httpx() -> None:
-    agent = object.__new__(Terminus2)
-    agent._llm = SimpleNamespace(_api_base="http://localhost:8000/v1")
-    agent.model_alias = "hosted_vllm/test-model"
-
-    chat = SimpleNamespace(messages=[{"role": "user", "content": "hi"}])
-
-    fake_client = mock.MagicMock()
-    fake_client.post.return_value = SimpleNamespace(
-        status_code=200, json=lambda: {"count": 7}
-    )
-
-    with (
-        mock.patch.object(
-            t2, "_get_shared_tokenize_client", return_value=fake_client
-        ) as shared,
-        mock.patch("httpx.Client") as fresh_client_ctor,
-    ):
-        result = agent._count_total_tokens(chat)
-
-    assert result == 7
-    shared.assert_called_once()  # went through the pooled client
-    fresh_client_ctor.assert_not_called()  # no per-call client / SSL context
-    # vLLM serves /tokenize at the server root (not under /v1).
-    posted_url = fake_client.post.call_args[0][0]
-    assert posted_url == "http://localhost:8000/tokenize"

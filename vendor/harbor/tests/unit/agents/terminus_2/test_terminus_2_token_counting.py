@@ -12,7 +12,6 @@ from openai import AsyncOpenAI
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("count_mode", ["sync", "async"])
 @pytest.mark.parametrize(
     ("model_name", "encoding_source"),
     [
@@ -23,7 +22,7 @@ from openai import AsyncOpenAI
     ],
 )
 async def test_proxy_without_tokenize_counts_locally_and_generates(
-    tmp_path, monkeypatch, model_name, count_mode, encoding_source
+    tmp_path, monkeypatch, model_name, encoding_source
 ):
     # A local encoding keeps tokenizer data loading offline while using real BPE.
     encoding = tiktoken.Encoding(
@@ -78,25 +77,17 @@ async def test_proxy_without_tokenize_counts_locally_and_generates(
     chat = Chat(agent._llm)
     chat.append_response("Inspect the repository.", LLMResponse(content="Inspected."))
     async with httpx.AsyncClient(transport=transport) as async_client:
-        with httpx.Client(transport=transport) as sync_client:
-            monkeypatch.setattr(
-                terminus_2, "shared_async_tokenize_client", lambda: async_client
-            )
-            monkeypatch.setattr(
-                terminus_2, "_get_shared_tokenize_client", lambda: sync_client
-            )
-            async with AsyncOpenAI(
-                api_key="EMPTY", base_url="http://proxy/v1", http_client=async_client
-            ) as model_client:
-                agent._llm._openai_client = model_client
-                extra = [{"role": "user", "content": "Count this summary request too."}]
-                if count_mode == "sync":
-                    base_count = agent._count_total_tokens(chat)
-                    request_count = agent._count_total_tokens(chat, extra)
-                else:
-                    base_count = await agent._acount_total_tokens(chat)
-                    request_count = await agent._acount_total_tokens(chat, extra)
-                assert request_count > base_count > 0
-                response = await chat.chat("Continue.")
-                assert response.content == "Done."
+        monkeypatch.setattr(
+            terminus_2, "shared_async_tokenize_client", lambda: async_client
+        )
+        async with AsyncOpenAI(
+            api_key="EMPTY", base_url="http://proxy/v1", http_client=async_client
+        ) as model_client:
+            agent._llm._openai_client = model_client
+            extra = [{"role": "user", "content": "Count this summary request too."}]
+            base_count = await agent._acount_total_tokens(chat)
+            request_count = await agent._acount_total_tokens(chat, extra)
+            assert request_count > base_count > 0
+            response = await chat.chat("Continue.")
+            assert response.content == "Done."
     assert any(request.url.path == "/tokenize" for request in requests)

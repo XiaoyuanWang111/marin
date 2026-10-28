@@ -9,7 +9,7 @@ set, ``_count_total_tokens`` POSTed ``{"messages": []}`` to ``/tokenize``. HF's
 runs (``tokenization_utils_base``), which vLLM re-raises as a ``ValueError`` and
 fails the request.
 
-The fix short-circuits ``_count_total_tokens`` to 0 when the chat has no
+The fix short-circuits ``_acount_total_tokens`` to 0 when the chat has no
 messages, so the HTTP probe is never dispatched with an empty array. This also
 covers the ``_unwind_messages_to_free_tokens`` path that can drop a 2-message
 chat to zero before re-counting.
@@ -23,7 +23,7 @@ from harbor.agents.terminus_2.terminus_2 import Terminus2
 
 
 class _ApiBaseLLM:
-    """LLM stub that advertises a vLLM ``_api_base`` so ``_count_total_tokens``
+    """LLM stub that advertises a vLLM ``_api_base`` so ``_acount_total_tokens``
     would take the ``/tokenize`` HTTP branch if the empty-chat guard were
     missing."""
 
@@ -47,20 +47,21 @@ def _make_agent() -> Terminus2:
     return agent
 
 
-def test_count_total_tokens_empty_chat_returns_zero_without_http(monkeypatch):
+@pytest.mark.asyncio
+async def test_count_total_tokens_empty_chat_returns_zero_without_http(monkeypatch):
     """An empty chat must return 0 tokens and issue NO ``/tokenize`` request."""
     import httpx
 
     def _boom(*args, **kwargs):
         raise AssertionError(
-            "httpx.Client.post must not be called for an empty chat — "
+            "httpx.AsyncClient.post must not be called for an empty chat — "
             "an empty messages: [] request would crash vLLM's /tokenize."
         )
 
-    monkeypatch.setattr(httpx.Client, "post", _boom)
+    monkeypatch.setattr(httpx.AsyncClient, "post", _boom)
 
     agent = _make_agent()
-    assert agent._count_total_tokens(_EmptyChat()) == 0
+    assert await agent._acount_total_tokens(_EmptyChat()) == 0
 
 
 @pytest.mark.asyncio
@@ -70,7 +71,7 @@ async def test_proactive_summarization_on_empty_first_episode_chat(monkeypatch):
     import httpx
 
     monkeypatch.setattr(
-        httpx.Client,
+        httpx.AsyncClient,
         "post",
         lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("empty-messages /tokenize request was dispatched")

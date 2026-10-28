@@ -128,7 +128,7 @@ class WindowAwareFakeLLM:
 
     Unlike ``FakeLLM`` (which checks only ``max_tokens``), this counts the real
     request size: ``tokens(message_history) + tokens(prompt) + max_tokens``. The
-    token model matches the deterministic ``_count_total_tokens`` stub in
+    token model matches the deterministic ``_acount_total_tokens`` stub in
     ``_make_agent`` (shared via ``_det_tokens``) so the unwind accounting and the
     serve-time rejection agree.
     """
@@ -226,18 +226,9 @@ def _make_agent(
     # agree. extra_messages (e.g. the summary prompt appended only to the
     # request) are counted by content length so the budget matches the real
     # request size.
-    def fake_count_total_tokens(chat, extra_messages=None) -> int:
+    async def fake_acount_total_tokens(chat, extra_messages=None) -> int:
         extra_chars = sum(len(m.get("content", "")) for m in (extra_messages or []))
         return _det_tokens(len(chat.messages), per_msg_tokens, extra_chars)
-
-    agent._count_total_tokens = fake_count_total_tokens  # type: ignore[method-assign]
-
-    # The async per-turn caller (_check_proactive_summarization) uses
-    # _acount_total_tokens, which is now a truly-async /tokenize probe rather
-    # than a to_thread wrapper around _count_total_tokens — so stub it to the
-    # same deterministic count to keep the token accounting under test.
-    async def fake_acount_total_tokens(chat, extra_messages=None) -> int:
-        return fake_count_total_tokens(chat, extra_messages)
 
     agent._acount_total_tokens = fake_acount_total_tokens  # type: ignore[method-assign]
     return agent
@@ -401,7 +392,8 @@ async def test_run_subagent_forwards_max_tokens_to_llm_call():
     assert passed >= RESERVED_SUMMARY_OUTPUT
 
 
-def test_summary_unwind_leaves_requested_output_reserve():
+@pytest.mark.asyncio
+async def test_summary_unwind_leaves_requested_output_reserve():
     """The summary unwind removes chat history until
     context_limit - input_tokens >= RESERVED_SUMMARY_OUTPUT, so the summary
     subagent always has real output headroom regardless of starting fullness.
@@ -418,9 +410,9 @@ def test_summary_unwind_leaves_requested_output_reserve():
     # must unwind message pairs until >= RESERVED_SUMMARY_OUTPUT is free.
     chat = _FakeChat(n_messages=155)
 
-    agent._unwind_messages_to_free_tokens(chat, RESERVED_SUMMARY_OUTPUT)
+    await agent._unwind_messages_to_free_tokens(chat, RESERVED_SUMMARY_OUTPUT)
 
-    free = context_limit - agent._count_total_tokens(chat)
+    free = context_limit - await agent._acount_total_tokens(chat)
     assert free >= RESERVED_SUMMARY_OUTPUT, (
         f"reserve helper left only {free} free tokens, "
         f"need >= {RESERVED_SUMMARY_OUTPUT}"
