@@ -4,11 +4,18 @@
 all Snowball and Grug candidate rows in the campaign tracker. It requires a
 complete observed candidate panel after excluding FinanceBench, PIQA, and
 TriviaQA. A benchmark is decisive only when the adjusted 95% confidence
-interval for the paired score difference excludes zero; all other outcomes are
-ties. Comparisons use the full-precision aggregate recovered from durable trial
-evidence; the tracker's three-decimal score is presentation-only. The tool
-writes the benchmark-level decisions, complete pairwise table, ranking, cell
-statistics, and input hashes.
+interval for the score difference excludes zero; all other outcomes are ties.
+When the durable evidence of both cells names the items behind each score
+(corrected replay trials, or archive samples whose metric reproduces the
+tracker score) and both cover the same items, the interval is the paired t
+interval of the mean per-item difference; repeated replies to one item enter
+through their mean. Other comparisons, such as those with a recovered
+aggregate, use `1.96 x hypot(adjusted SEMs)`, and the outcome's
+`difference_basis` says `unpaired`. Both intervals include the policy's
+`1 / sqrt(0.9)` infrastructure-failure tolerance. Comparisons use the
+full-precision aggregate recovered from durable trial evidence; the tracker's
+three-decimal score is presentation-only. The tool writes the benchmark-level
+decisions, complete pairwise table, ranking, cell statistics, and input hashes.
 
 `critical_difference/plot.py` adapts the September 17 campaign's
 `release-figures/generate_release_figures.py`. It plots the selected checkpoint

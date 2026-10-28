@@ -42,6 +42,94 @@ def test_corrected_replay_cell_uses_trial_rewards_for_uncertainty(monkeypatch) -
     assert statistics["sem_basis"] == "corrected_replay_trial_rewards"
 
 
+def test_corrected_replay_sem_counts_documents_not_replies(monkeypatch) -> None:
+    plot = load_plot()
+    replay = {
+        "model": "open-athena/Snowball-Test",
+        "benchmark": "aime24",
+        "num_trials": 6,
+        "num_judge_failed": 0,
+        "trials": [
+            {"doc_id": document, "trial_id": trial, "corrected_correct": value}
+            for document, values in enumerate(((True, True, True), (False, False, True)))
+            for trial, value in enumerate(values)
+        ],
+    }
+    monkeypatch.setattr(plot, "read_json", lambda _: replay)
+    cell = plot.Cell(replay["model"], replay["benchmark"], 0.667, "s3://bucket/regrade/model.json")
+
+    statistics = plot.cell_statistics(cell, {})
+    rewards = plot.item_rewards(cell, {})
+
+    # Document means 1 and 1/3 give a standard error of 1/3 over two documents; six independent replies would give
+    # 0.211.
+    assert statistics["trial_count"] == 6
+    assert math.isclose(statistics["score"], 2 / 3)
+    assert math.isclose(statistics["sem"], 1 / 3)
+    assert statistics["sem_basis"] == "corrected_replay_item_means"
+    assert rewards == {"0": [1.0, 1.0, 1.0], "1": [0.0, 0.0, 1.0]}
+
+
+def test_corrected_replay_with_one_reply_per_document_keeps_the_binary_sem(monkeypatch) -> None:
+    plot = load_plot()
+    replay = {
+        "model": "open-athena/Snowball-Test",
+        "benchmark": "math500",
+        "num_trials": 4,
+        "num_judge_failed": 0,
+        "trials": [
+            {"doc_id": document, "corrected_correct": value} for document, value in enumerate((True, False, True, True))
+        ],
+    }
+    monkeypatch.setattr(plot, "read_json", lambda _: replay)
+    cell = plot.Cell(replay["model"], replay["benchmark"], 0.75, "s3://bucket/regrade/model.json")
+
+    statistics = plot.cell_statistics(cell, {})
+
+    assert statistics["sem_basis"] == "corrected_replay_item_means"
+    assert math.isclose(statistics["sem"], math.sqrt(0.75 * 0.25 / 3))
+
+
+def test_binary_archive_cell_uses_full_precision_sample_rewards_that_reproduce_the_tracker(monkeypatch) -> None:
+    plot = load_plot()
+    rows = [
+        {"task": "AIME24", "doc_id": document, "metrics": {"accuracy": value, "loose": 1.0}, "filter": None}
+        for document, values in (("0", (1.0, 1.0)), ("1", (0.0, 1.0)), ("2", (1.0, 0.0)))
+        for value in values
+    ]
+
+    class SampleTable:
+        def to_pylist(self, **_kwargs):
+            return rows
+
+    class SampleView:
+        def __init__(self, _url):
+            pass
+
+        def scan(self, _table, **_kwargs):
+            return SampleTable()
+
+    class Filesystem:
+        def exists(self, _path):
+            return True
+
+    monkeypatch.setattr(plot, "ReadView", SampleView)
+    monkeypatch.setattr(plot, "filesystem_for", lambda url: (Filesystem(), url))
+    monkeypatch.setattr(plot, "read_json", lambda _: {"status": "succeeded", "coverage": {"AIME24": {"n_scored": 3}}})
+    matching = plot.Cell("model", "aime24", 0.667, "s3://bucket/model-aime24/results")
+    unmatched = plot.Cell("model", "aime24", 0.700, "s3://bucket/model-aime24/results")
+
+    statistics = plot.cell_statistics(matching, {})
+
+    assert plot.item_rewards(matching, {}) == {"0": [1.0, 1.0], "1": [0.0, 1.0], "2": [1.0, 0.0]}
+    assert math.isclose(statistics["score"], 2 / 3)
+    assert statistics["tracker_score"] == 0.667
+    assert statistics["sem_basis"] == "binary_sample_mean_from_record_coverage"
+    # No sample metric reproduces a binary tracker score of 0.700: the cell keeps the tracker score and stays unpaired.
+    assert plot.item_rewards(unmatched, {}) is None
+    assert plot.cell_statistics(unmatched, {})["score"] == 0.700
+
+
 def test_cruxeval_counts_only_output_tasks(monkeypatch) -> None:
     plot = load_plot()
 

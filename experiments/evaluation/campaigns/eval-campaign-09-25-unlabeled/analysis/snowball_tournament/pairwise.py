@@ -13,9 +13,14 @@ import importlib.util
 import json
 import math
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from statistics import fmean
 from types import ModuleType
 from typing import Any
+
+import numpy as np
+from scipy.stats import t as student_t
 
 # The campaign analysis is intentionally executable without installing it as a
 # package. Reuse the critical-difference tool's audited sample-statistics path.
@@ -28,8 +33,13 @@ sys.modules[STATISTICS_SPEC.name] = critical_difference
 STATISTICS_SPEC.loader.exec_module(critical_difference)
 
 CI_MULTIPLIER = 1.96
+CI_QUANTILE = 0.975
+# The policy expands every reported uncertainty by 1 / sqrt(0.9) for its 10% infrastructure-failure tolerance.
+# `adjusted_sem` already carries the factor; the paired interval applies it to the standard error of the difference.
+TOLERANCE_FACTOR = 1 / math.sqrt(critical_difference.SURVIVAL)
 EXCLUDED_BENCHMARKS = frozenset({"financebench", "piqa", "triviaqa"})
 type TournamentRow = dict[str, float | int | str]
+type ItemRewards = Mapping[str, Sequence[float]]
 
 
 def is_candidate(model: str) -> bool:
@@ -53,20 +63,55 @@ def candidate_panel(
     return benchmarks, candidates, cells
 
 
+def paired_difference(left: ItemRewards, right: ItemRewards) -> tuple[float, float]:
+    """Mean per-item score difference and its standard error, with items as the sampling unit.
+
+    Several rewards for one item, such as repeated replies to one problem, enter through their mean, so the
+    standard error is clustered by item. The mean equals the score difference when every item has the same
+    number of rewards.
+    """
+    differences = np.asarray([fmean(left[item]) - fmean(right[item]) for item in left])
+    return float(differences.mean()), float(differences.std(ddof=1) / math.sqrt(differences.size))
+
+
 def pairwise_rows(
     benchmarks: list[str],
     candidates: list[str],
     statistics: dict[tuple[str, str], dict[str, object]],
+    item_rewards: Mapping[tuple[str, str], ItemRewards],
 ) -> tuple[list[TournamentRow], list[TournamentRow], list[TournamentRow]]:
-    """Score benchmark pairs, treating differences within their 95% CI as ties."""
+    """Score benchmark pairs, treating differences within their 95% CI as ties.
+
+    When both cells have per-item rewards on the same items, keyed by (model, benchmark), the interval is the
+    paired t interval of the mean per-item difference. Otherwise it combines the two cells' adjusted SEMs as
+    independent errors, and the outcome is marked unpaired.
+    """
     outcomes: list[TournamentRow] = []
     for left_index, left in enumerate(candidates):
         for right in candidates[left_index + 1 :]:
             for benchmark in benchmarks:
                 left_row = statistics[(left, benchmark)]
                 right_row = statistics[(right, benchmark)]
-                difference = float(left_row["score"]) - float(right_row["score"])
-                threshold = CI_MULTIPLIER * math.hypot(float(left_row["adjusted_sem"]), float(right_row["adjusted_sem"]))
+                left_items = item_rewards.get((left, benchmark))
+                right_items = item_rewards.get((right, benchmark))
+                if (
+                    left_items is not None
+                    and right_items is not None
+                    and len(left_items) > 1
+                    and left_items.keys() == right_items.keys()
+                ):
+                    paired_items = len(left_items)
+                    difference, standard_error = paired_difference(left_items, right_items)
+                    quantile = float(student_t.ppf(CI_QUANTILE, paired_items - 1))
+                    threshold = quantile * standard_error * TOLERANCE_FACTOR
+                    basis = "paired"
+                else:
+                    paired_items = 0
+                    difference = float(left_row["score"]) - float(right_row["score"])
+                    threshold = CI_MULTIPLIER * math.hypot(
+                        float(left_row["adjusted_sem"]), float(right_row["adjusted_sem"])
+                    )
+                    basis = "unpaired"
                 outcome = "tie"
                 if difference > threshold:
                     outcome = "left"
@@ -81,6 +126,8 @@ def pairwise_rows(
                         "right_score": float(right_row["score"]),
                         "score_difference": difference,
                         "difference_95_threshold": threshold,
+                        "difference_basis": basis,
+                        "paired_items": paired_items,
                         "outcome": outcome,
                     }
                 )
@@ -150,6 +197,7 @@ def write_report(
     path: Path,
     candidates: list[str],
     benchmarks: list[str],
+    outcomes: list[TournamentRow],
     pairs: list[TournamentRow],
     summary: list[TournamentRow],
     winner: str,
@@ -157,6 +205,7 @@ def write_report(
     tracker_hash: str,
 ) -> None:
     ids = {model: f"S{index + 1}" for index, model in enumerate(candidates)}
+    paired = sum(row["difference_basis"] == "paired" for row in outcomes)
     lines = [
         "# Snowball-lineage tournament",
         "",
@@ -166,9 +215,12 @@ def write_report(
         f"{len(candidates)} candidates on {len(benchmarks)} benchmarks. FinanceBench, PIQA, and TriviaQA are excluded. "
         "Comparisons use full-precision aggregates recovered from the durable trial evidence; tracker values are "
         "three-decimal presentation values only. "
-        "A benchmark is a win only when the adjusted 95% confidence interval for its paired score difference "
-        "excludes zero; otherwise it is a tie. The adjusted SEM includes the policy's infrastructure-failure "
-        "tolerance factor of `1 / sqrt(0.9)`.",
+        "A benchmark is a win only when the adjusted 95% confidence interval for its score difference "
+        "excludes zero; otherwise it is a tie. When both checkpoints have per-item rewards on the same items "
+        f"({paired} of {len(outcomes)} comparisons), the interval is the paired t interval of the mean per-item "
+        "difference, and repeated replies to one item enter through their mean. Otherwise it is "
+        "`1.96 x hypot(adjusted SEMs)`. Both intervals include the policy's infrastructure-failure tolerance factor "
+        "of `1 / sqrt(0.9)`.",
         "",
         "Finalist comparison: [`TOP_TWO_MODEL_CARD.md`](TOP_TWO_MODEL_CARD.md).",
         "",
@@ -239,8 +291,10 @@ def top_two_rows(
         champion_radius = CI_MULTIPLIER * float(champion_stat["adjusted_sem"])
         runner_up_radius = CI_MULTIPLIER * float(runner_up_stat["adjusted_sem"])
         normalized_outcome = str(outcome["outcome"])
+        difference = float(outcome["score_difference"])
         if not champion_is_left:
             normalized_outcome = {"left": "runner_up", "right": "champion", "tie": "tie"}[normalized_outcome]
+            difference = -difference
         else:
             normalized_outcome = {"left": "champion", "right": "runner_up", "tie": "tie"}[normalized_outcome]
         rows.append(
@@ -252,8 +306,9 @@ def top_two_rows(
                 "runner_up_score": runner_up_score,
                 "runner_up_ci_low": max(0.0, runner_up_score - runner_up_radius),
                 "runner_up_ci_high": min(1.0, runner_up_score + runner_up_radius),
-                "champion_minus_runner_up": champion_score - runner_up_score,
+                "champion_minus_runner_up": difference,
                 "difference_95_threshold": float(outcome["difference_95_threshold"]),
+                "difference_basis": outcome["difference_basis"],
                 "outcome": normalized_outcome,
             }
         )
@@ -309,8 +364,10 @@ def write_top_two_model_card(
         f"**{int(direct['wins']) - int(direct['losses']):+d} benchmark**. The tournament title comes from "
         "performance against the entire candidate cohort, not from a dominant direct result against the runner-up.",
         "",
-        "A benchmark is decisive only when `abs(score difference) > 1.96 x hypot(adjusted SEMs)`. "
-        "The adjusted SEM includes the policy factor `1 / sqrt(0.9)`; otherwise the benchmark is a tie.",
+        "A benchmark is decisive only when the score difference exceeds its 95% threshold: the paired t interval of "
+        "the per-item differences when both checkpoints have per-item rewards on the same items, otherwise "
+        "`1.96 x hypot(adjusted SEMs)`. Both include the policy factor `1 / sqrt(0.9)`; otherwise the benchmark is "
+        "a tie. `top_two_head_to_head.csv` records which threshold decided each benchmark.",
         "",
         "## Decisive benchmarks",
         "",
@@ -402,7 +459,8 @@ def main() -> None:
         recovered_hash,
     )
     statistics = {(str(row["model"]), str(row["benchmark"])): row for row in statistics_rows}
-    outcomes, pairs, summary = pairwise_rows(benchmarks, candidates, statistics)
+    item_rewards = critical_difference.collect_item_rewards(candidates, benchmarks, cells, recovered)
+    outcomes, pairs, summary = pairwise_rows(benchmarks, candidates, statistics, item_rewards)
     write_csv(args.output_dir / "snowball_benchmark_pair_outcomes.csv", outcomes)
     write_csv(args.output_dir / "snowball_pairwise_head_to_head.csv", pairs)
     write_csv(args.output_dir / "snowball_pairwise_summary.csv", summary)
@@ -420,7 +478,13 @@ def main() -> None:
         "joint_leaders": leaders,
         "tie_break": "pooled win rate, then model ID" if len(leaders) > 1 else None,
         "criterion": f"mean of {len(candidates) - 1} uncertainty-aware paired win rates",
-        "tie_rule": "tie unless abs(score difference) > 1.96 * hypot(adjusted SEMs)",
+        "tie_rule": (
+            "paired when both cells have per-item rewards on the same items: tie unless abs(mean item difference) > "
+            "t(0.975, items - 1) * sd(item differences) / sqrt(items) / sqrt(0.9); otherwise tie unless "
+            "abs(score difference) > 1.96 * hypot(adjusted SEMs)"
+        ),
+        "paired_outcomes": sum(row["difference_basis"] == "paired" for row in outcomes),
+        "unpaired_outcomes": sum(row["difference_basis"] == "unpaired" for row in outcomes),
         "score_precision": "full-precision task aggregate; tracker score is presentation-only",
         "sem_adjustment": "1 / sqrt(0.9)",
         "tracker_sha256": tracker_hash,
@@ -434,6 +498,7 @@ def main() -> None:
         args.output_dir / "snowball_pairwise_win_rates.md",
         candidates,
         benchmarks,
+        outcomes,
         pairs,
         summary,
         winner,

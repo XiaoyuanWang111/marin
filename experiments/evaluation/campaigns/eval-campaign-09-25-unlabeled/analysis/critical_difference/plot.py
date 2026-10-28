@@ -19,6 +19,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import fmean
 
 import matplotlib as mpl
 
@@ -41,7 +42,10 @@ EARLY_SEAL_REQUIREMENTS = {
 }
 SNOWBALL_FLOPS = 1.2440924703713099e23
 SHARED100_MODEL = "open-athena/Grug-67B-A2B-Merge-NUPA-BFCL-Shared100-2026.10.09"
-STATISTICS_VERSION = "recovered-metrics-v6-full-precision"
+STATISTICS_VERSION = "recovered-metrics-v7-item-means"
+# Tracker scores are rounded to three decimals.
+DISPLAY_ROUNDING = 0.0005
+CONTINUOUS_SCORE_TOLERANCE = 0.02
 
 
 @dataclass(frozen=True)
@@ -118,35 +122,124 @@ def scored_count(cell: Cell) -> tuple[int, str]:
     return count, "record_coverage"
 
 
-def continuous_rewards(cell: Cell) -> tuple[np.ndarray, str]:
-    """Select the scored sample metric matching the canonical tracker point estimate."""
-    table = ReadView(cell.results_path).scan("samples", columns=["grading", "metrics", "filter", "doc"])
+def sample_metric_candidates(cell: Cell) -> dict[str, list[tuple[str | None, float]]] | None:
+    """Every scored sample metric in the cell's archive as (document, reward) pairs, or None without samples.
+
+    The document is None when the samples do not name it or span several tasks, whose document IDs can repeat.
+    """
+    columns = ["task", "doc_id", "grading", "metrics", "filter"]
+    if cell.benchmark == "cruxeval":
+        columns.append("doc")
+    table = ReadView(cell.results_path).scan("samples", columns=columns)
     if table is None:
-        raise ValueError(f"no normalized samples for {cell.model} / {cell.benchmark}")
-    candidates: dict[str, list[float]] = {}
-    for row in table.to_pylist(maps_as_pydicts="strict"):
-        if cell.benchmark == "cruxeval" and json.loads(row["doc"])["cruxeval_task"] != "output":
-            continue
+        return None
+    rows = [
+        row
+        for row in table.to_pylist(maps_as_pydicts="strict")
+        if cell.benchmark != "cruxeval" or json.loads(row["doc"])["cruxeval_task"] == "output"
+    ]
+    single_task = len({row.get("task") for row in rows}) == 1
+    candidates: dict[str, list[tuple[str | None, float]]] = {}
+    for row in rows:
+        document = str(row["doc_id"]) if single_task and row.get("doc_id") is not None else None
         grade = row.get("grading") or {}
         if grade.get("score") is not None:
             key = f"grading:{grade.get('metric')}:{grade.get('filter')}"
-            candidates.setdefault(key, []).append(float(grade["score"]))
+            candidates.setdefault(key, []).append((document, float(grade["score"])))
         for name, value in (row.get("metrics") or {}).items():
-            candidates.setdefault(f"metrics:{name}:{row.get('filter')}", []).append(float(value))
-    viable = {
-        key: np.asarray(values, dtype=float)
-        for key, values in candidates.items()
-        if len(values) > 1 and np.isfinite(values).sum() > 1
-    }
+            candidates.setdefault(f"metrics:{name}:{row.get('filter')}", []).append((document, float(value)))
+    return candidates
+
+
+def matching_metric(cell: Cell, candidates: dict[str, list[tuple[str | None, float]]]) -> str | None:
+    """The sample metric whose finite mean is closest to the tracker score, or None when none is viable."""
+    rewards = {key: np.asarray([reward for _, reward in values], dtype=float) for key, values in candidates.items()}
+    viable = {key: values for key, values in rewards.items() if values.size > 1 and np.isfinite(values).sum() > 1}
     if not viable:
+        return None
+    return min(viable, key=lambda key: (abs(float(np.nanmean(viable[key])) - cell.score), -viable[key].size, key))
+
+
+def continuous_rewards(cell: Cell) -> tuple[np.ndarray, str]:
+    """Select the scored sample metric matching the canonical tracker point estimate."""
+    candidates = sample_metric_candidates(cell)
+    if candidates is None:
+        raise ValueError(f"no normalized samples for {cell.model} / {cell.benchmark}")
+    selector = matching_metric(cell, candidates)
+    if selector is None:
         raise ValueError(f"no finite sample metric for {cell.model} / {cell.benchmark}")
-    selector, rewards = min(
-        viable.items(), key=lambda item: (abs(float(np.nanmean(item[1])) - cell.score), -item[1].size, item[0])
-    )
+    rewards = np.asarray([reward for _, reward in candidates[selector]], dtype=float)
     rewards = rewards[np.isfinite(rewards)]
-    if abs(float(np.mean(rewards)) - cell.score) > 0.02:
+    if abs(float(np.mean(rewards)) - cell.score) > CONTINUOUS_SCORE_TOLERANCE:
         raise ValueError(f"sample metric differs from tracker score for {cell.model} / {cell.benchmark}: {selector}")
     return rewards, selector
+
+
+def replay_item_rewards(trials: list[dict]) -> dict[str, list[float]] | None:
+    """Corrected replay verdicts grouped by document, or None when the trials do not name their documents."""
+    if any(trial.get("doc_id") is None for trial in trials):
+        return None
+    items: dict[str, list[float]] = {}
+    for trial in trials:
+        items.setdefault(str(trial["doc_id"]), []).append(float(trial["corrected_correct"]))
+    return items
+
+
+def item_sem(items: dict[str, list[float]]) -> float:
+    """Standard error of a score over items: repeated replies to one item enter through their mean."""
+    means = np.asarray([np.mean(rewards) for rewards in items.values()])
+    if means.size < 2:
+        raise ValueError(f"an item-level SEM needs at least two items, got {means.size}")
+    return float(means.std(ddof=1) / math.sqrt(means.size))
+
+
+def item_rewards(cell: Cell, recovered: dict[str, dict]) -> dict[str, list[float]] | None:
+    """Per-item rewards behind a cell's score, keyed by document, or None when its evidence does not identify items.
+
+    Replay cells group their corrected verdicts by document. Archive cells use the sample metric that
+    `continuous_rewards` selects, and keep it only when it reproduces the tracker score (to its display rounding
+    for binary metrics). Cells scored from a recovered aggregate or from length-controlled episodes have no
+    per-item verdicts.
+    """
+    if cell.results_path.endswith(".json"):
+        trials = read_json(cell.results_path)["trials"]
+        if not all("corrected_correct" in trial for trial in trials):
+            return None
+        return replay_item_rewards(trials)
+    if recovered_statistics(cell, recovered) is not None:
+        return None
+    candidates = sample_metric_candidates(cell)
+    if candidates is None:
+        return None
+    selector = matching_metric(cell, candidates)
+    if selector is None:
+        return None
+    rewards = [(document, reward) for document, reward in candidates[selector] if math.isfinite(reward)]
+    tolerance = CONTINUOUS_SCORE_TOLERANCE if cell.benchmark in CONTINUOUS else DISPLAY_ROUNDING
+    mean = math.fsum(reward for _, reward in rewards) / len(rewards)
+    if any(document is None for document, _ in rewards) or abs(mean - cell.score) > tolerance:
+        return None
+    items: dict[str, list[float]] = {}
+    for document, reward in rewards:
+        items.setdefault(document, []).append(reward)
+    return items
+
+
+def collect_item_rewards(
+    models: list[str],
+    benchmarks: list[str],
+    cells: dict[str, dict[str, Cell]],
+    recovered: dict[str, dict],
+) -> dict[tuple[str, str], dict[str, list[float]]]:
+    """Per-item rewards for every model-benchmark cell whose evidence identifies items."""
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = {
+            (model, benchmark): executor.submit(item_rewards, cells[model][benchmark], recovered)
+            for model in models
+            for benchmark in benchmarks
+        }
+    rewards = {key: future.result() for key, future in futures.items()}
+    return {key: items for key, items in rewards.items() if items is not None}
 
 
 def recovered_statistics(cell: Cell, recovered: dict[str, dict]) -> dict[str, object] | None:
@@ -217,9 +310,16 @@ def cell_statistics(cell: Cell, recovered: dict[str, dict]) -> dict[str, object]
         if replay.get("num_judge_failed", 0):
             raise ValueError(f"failed replay judgments for {cell.model} / {cell.benchmark}")
         mean = sum(float(trial["corrected_correct"]) for trial in trials) / count
-        if count < 2 or abs(mean - cell.score) > 0.0005:
+        if count < 2 or abs(mean - cell.score) > DISPLAY_ROUNDING:
             raise ValueError(f"replay trial mean differs from tracker for {cell.model} / {cell.benchmark}")
-        sem = math.sqrt(mean * (1 - mean) / (count - 1))
+        # Repeated replies to one document are not independent items; the SEM counts documents.
+        items = replay_item_rewards(trials)
+        if items is None:
+            sem = math.sqrt(mean * (1 - mean) / (count - 1))
+            sem_basis = "corrected_replay_trial_rewards"
+        else:
+            sem = item_sem(items)
+            sem_basis = "corrected_replay_item_means"
         return {
             "model": cell.model,
             "benchmark": cell.benchmark,
@@ -229,7 +329,7 @@ def cell_statistics(cell: Cell, recovered: dict[str, dict]) -> dict[str, object]
             "raw_reward_mean": mean,
             "sem": sem,
             "adjusted_sem": sem / math.sqrt(SURVIVAL),
-            "sem_basis": "corrected_replay_trial_rewards",
+            "sem_basis": sem_basis,
             "source": cell.results_path,
             "statistics_version": STATISTICS_VERSION,
         }
@@ -245,9 +345,15 @@ def cell_statistics(cell: Cell, recovered: dict[str, dict]) -> dict[str, object]
         mean = float(np.mean(rewards))
         sem = float(np.std(rewards, ddof=1) / math.sqrt(count))
     else:
-        selector = f"binary_score_from_{count_basis}"
-        mean = cell.score
-        sem = math.sqrt(cell.score * (1 - cell.score) / (count - 1))
+        # The full-precision score is the mean of the sample rewards that reproduce the three-decimal tracker cell.
+        items = item_rewards(cell, recovered)
+        if items is None:
+            selector = f"binary_score_from_{count_basis}"
+            mean = cell.score
+        else:
+            selector = f"binary_sample_mean_from_{count_basis}"
+            mean = fmean(reward for rewards in items.values() for reward in rewards)
+        sem = math.sqrt(mean * (1 - mean) / (count - 1))
     return {
         "model": cell.model,
         "benchmark": cell.benchmark,
@@ -490,7 +596,9 @@ def main() -> None:
         "three-decimal presentation values only. Scores are sampled 100,000 times from independent normal "
         "distributions using task-level SEM expanded by "
         "1/sqrt(0.9) for infrastructure tolerance, then clipped to [0, 1]. Binary-score SEM is the exact Bernoulli "
-        "sample-variance expression from the score and scored-trial count; continuous metrics use stored trial rewards. "
+        "sample-variance expression from the score and scored-trial count; a binary score is the mean of the archive's "
+        "sample rewards when they reproduce the tracker cell. Continuous metrics use stored trial rewards. "
+        "Corrected replays use the spread of their per-document means, so repeated replies to one problem count once. "
         "Audited recovered cells use their independently aggregated reward SEM and scored-trial count. "
         "CruxEval counts only output-direction trials; historical early-sealed SWE-bench cells derive their "
         "scored count from sample-level rewards when at least 90% of trials are present and agree with the tracker. "
