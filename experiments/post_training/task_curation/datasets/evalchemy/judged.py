@@ -27,8 +27,8 @@ from experiments.post_training.task_curation.datasets.evalchemy.pipeline import 
 from experiments.post_training.task_curation.pipeline import CurationRecipe, HfSource, UrlSource
 from experiments.post_training.task_curation.source import RlDataSource, SourceInfo
 
-SOURCE_REVISION = "623134de90723e7f189036da005067f36817b6e7"
-FINANCEBENCH_SHA256 = "0df2b2080400693d98eeccac6970432af72d7e092287b08bcc9bd013d2c3232e"
+SOURCE_REVISION = "7e3374ee6d925ae342b76bf620a30483692d88f9"
+FINANCEBENCH_SHA256 = "8e71fe2dcee82dbb8e032121d8b2a0c82d27288c7c7acba9f35a78a1cdbdf5bf"
 SIMPLEQA_REVISION = "e319282ab125c3dbd0c7fd00be2e4dd54e7e8f94"
 FINANCE_PROMPT = (
     "Based on the following financial document excerpt, answer the question.\n\nDocument:\n{evidence_text}"
