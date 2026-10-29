@@ -25,6 +25,15 @@ def _symbol_free_relation(parsed: list) -> bool:
     return bool(values) and all(isinstance(value, Relational) and not value.free_symbols for value in values)
 
 
+def _same_relations(prediction: list, reference: list) -> bool:
+    """Whether the prediction holds the reference's relations, each identical or reversed (`a < b` as `b > a`)."""
+    values = [value for value in prediction if not isinstance(value, str)]
+    relations = [value for value in reference if not isinstance(value, str)]
+    return len(values) == len(relations) and all(
+        value in (relation, relation.reversed) for value, relation in zip(values, relations, strict=True)
+    )
+
+
 def final_boxed_answer(response: str) -> str:
     """Extract the source's last box in final content before a task boundary."""
     response = final_text(response)
@@ -44,8 +53,12 @@ def grade_boxed_math(expected: str, response: str) -> Reward:
     reference = parse(r"\boxed{" + expected + "}", parsing_timeout=timeout)
     prediction = parse(r"\boxed{" + candidate + "}", parsing_timeout=timeout)
     if reference and prediction:
-        relations = _symbol_free_relation(reference) and _symbol_free_relation(prediction)
-        match = not relations and bool(verify(gold=reference, target=prediction, timeout_seconds=timeout))
+        if _symbol_free_relation(reference):
+            # verify matches such a reference to any equation that solves to no value, such as `x = x`, and to
+            # other relations without free symbols, so require the reference's own relations.
+            match = _same_relations(prediction, reference)
+        else:
+            match = bool(verify(gold=reference, target=prediction, timeout_seconds=timeout))
     else:
         match = is_equiv(normalize_final_answer(candidate), normalize_final_answer(expected))
     return scored(float(match), extracted=candidate, expected=expected)

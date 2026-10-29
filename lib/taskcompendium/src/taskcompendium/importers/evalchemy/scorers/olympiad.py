@@ -74,6 +74,15 @@ def grade_olympiad(expected: tuple[str, ...], response: str) -> Reward:
     return scored(float(correct), extracted=candidate, method="minerva")
 
 
+def _same_relations(prediction: list, reference: list) -> bool:
+    """Whether the prediction holds the reference's relations, each identical or reversed (`a < b` as `b > a`)."""
+    values = [value for value in prediction if not isinstance(value, str)]
+    relations = [value for value in reference if not isinstance(value, str)]
+    return len(values) == len(relations) and all(
+        value in (relation, relation.reversed) for value, relation in zip(values, relations, strict=True)
+    )
+
+
 def answers_equivalent(candidate: str, expected: tuple[str, ...]) -> bool:
     """Compare source-extracted content without applying extraction a second time."""
     timeout = 5 if threading.current_thread() is threading.main_thread() else 0
@@ -81,12 +90,13 @@ def answers_equivalent(candidate: str, expected: tuple[str, ...]) -> bool:
     for answer in expected:
         reference = parse(r"\boxed{" + answer + "}", parsing_timeout=timeout)
         if reference and prediction:
-            values = [[value for value in parsed if not isinstance(value, str)] for parsed in (reference, prediction)]
-            relations = all(
-                items and all(isinstance(value, Relational) and not value.free_symbols for value in items)
-                for items in values
-            )
-            if not relations and verify(gold=reference, target=prediction, timeout_seconds=timeout):
+            relations = [value for value in reference if not isinstance(value, str)]
+            if relations and all(isinstance(value, Relational) and not value.free_symbols for value in relations):
+                # verify matches such a reference to any equation that solves to no value, such as `x = x`, and to
+                # other relations without free symbols, so require the reference's own relations.
+                if _same_relations(prediction, reference):
+                    return True
+            elif verify(gold=reference, target=prediction, timeout_seconds=timeout):
                 return True
         elif is_equiv(normalize_final_answer(candidate), normalize_final_answer(answer)):
             return True
