@@ -5,7 +5,7 @@
 
 GPQA's extraction was adapted there from QwenLM/Qwen2.5-Math (Apache-2.0).
 These protocols deliberately differ: GPQA takes the last A-D anywhere, while
-MMLU-Pro prioritizes the first answer marker before its case-sensitive fallback.
+MMLU-Pro prioritizes the first answer marker, matched case-sensitively like TIGER-Lab's reference extractor.
 """
 
 import re
@@ -22,10 +22,12 @@ def extract_gpqa_answer(response: str) -> str:
 
 def extract_mmlu_answer(response: str) -> str | None:
     text = final_text(response)
-    for pattern in (r"answer is \(?([A-J])\)?", r"Answer:\s*([A-J])"):
-        match = re.search(pattern, text, re.IGNORECASE)
+    # The patterns and their case follow TIGER-AI-Lab/MMLU-Pro evaluate_from_api.py, so "the answer is about 56%" does
+    # not read as A, and the "Answer:" fallback takes the last match on the first line that has one.
+    for pattern in (r"answer is \(?([A-J])\)?", r".*[aA]nswer:\s*([A-J])"):
+        match = re.search(pattern, text)
         if match:
-            return match.group(1).upper()
+            return match.group(1)
     match = re.search(r"\b[A-J]\b(?!.*\b[A-J]\b)", text, re.DOTALL)
     return match.group(0) if match else None
 
