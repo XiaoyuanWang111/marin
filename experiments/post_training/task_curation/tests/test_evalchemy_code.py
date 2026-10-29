@@ -16,6 +16,7 @@ from taskcompendium.pipeline.evaluation import evaluation_cases, publish_evaluat
 from taskcompendium.runtime.resources import resource_bytes
 from zephyr.context import ZephyrContext
 
+from experiments.post_training.task_curation.datasets.evalchemy.assets import code_protocol
 from experiments.post_training.task_curation.datasets.evalchemy.code import sources
 from experiments.post_training.task_curation.pipeline import source_recipe
 
@@ -90,3 +91,37 @@ def test_python_publication_keeps_tests_private_and_expands_crux_directions(case
         assert private["problem"]["code" if case["suite"] == "cruxeval" else "test"]
         if case["suite"] == "humaneval":
             assert private["problem"]["test"] not in item.task.context.events[0].content
+
+
+CONCAT = "def f(text, value):\n    return text + value"
+
+
+def _passes(program: str) -> bool:
+    """Whether a test program runs without raising, the grading wrapper's pass rule."""
+    try:
+        exec(compile(program, "<candidate>", "exec"), {})
+    except Exception:
+        return False
+    return True
+
+
+@pytest.mark.parametrize(
+    ("direction", "arguments", "output", "reply", "passed"),
+    [
+        # A ")" inside the input does not end the call.
+        ("output", "'(ac', ')'", "'(ac)'", "[ANSWER]\nassert f('(ac', ')') == '(ac)'\n[/ANSWER]", True),
+        ("input", "'(ac', ')'", "'(ac)'", "[ANSWER]\nassert f('(ac', ')') == '(ac)'\n[/ANSWER]", True),
+        # An "=" inside the output stays.
+        ("output", "'h', '=l'", "'h=l'", "[ANSWER]\nassert f('h', '=l') == 'h=l'\n[/ANSWER]", True),
+        # A wrong answer fails.
+        ("output", "'a', 'b'", "'ab'", "[ANSWER]\nassert f('a', 'b') == 'ba'\n[/ANSWER]", False),
+        ("input", "'a', 'b'", "'ab'", "[ANSWER]\nassert f('b', 'a') == 'ab'\n[/ANSWER]", False),
+        # An output answer containing f(<input>), or an input answer without a call, is not an answer.
+        ("output", "'a', 'b'", "'ab'", "[ANSWER]\nassert f('a', 'b') == f('a', 'b')\n[/ANSWER]", False),
+        ("input", "'a', 'b'", "'ab'", "[ANSWER]\n'ab'\n[/ANSWER]", False),
+    ],
+)
+def test_crux_reads_answers_by_the_harness_rule(direction, arguments, output, reply, passed):
+    problem = {"code": CONCAT, "input": arguments, "output": output}
+
+    assert _passes(code_protocol.test_program(problem, reply, "cruxeval", direction)) is passed
