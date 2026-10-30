@@ -23,6 +23,7 @@ from taskcompendium.models import ConversationInput, TaskSpec, TextMessage
 from taskcompendium.pipeline.evaluation import chat_item
 from taskcompendium.pipeline.inputs import ConversionContext, SourceFormat, required_grader_environment
 from taskcompendium.pipeline.models import Converter, IntendedUse, RawRow
+from taskcompendium.submission import conversation_messages
 from zephyr.readers import load_parquet
 
 from experiments.post_training.task_curation.datasets.evalchemy.datasets import ACCURACY
@@ -67,28 +68,30 @@ def convert_gpqa(row: RawRow, context: ConversionContext) -> TaskSpec:
     return task.model_copy(update={"tags": ("eval", "source:evalchemy", "benchmark:GPQADiamond")})
 
 
-def mmlu_example(example: dict, *, including_answer: bool) -> str:
+def mmlu_question(example: dict) -> str:
     options = [option for option in example["options"] if option != "N/A"]
     text = "Question:\n" + example["question"] + "\nOptions:\n"
-    text += "".join(f"{chr(65 + index)}. {option}\n" for index, option in enumerate(options))
-    if including_answer:
-        return (
-            text
-            + example["cot_content"].replace("A: Let's think step by step.", "Answer: Let's think step by step.")
-            + "\n\n"
-        )
-    return text + "Answer: Let's think step by step."
+    return text + "".join(f"{chr(65 + index)}. {option}\n" for index, option in enumerate(options))
 
 
-def mmlu_prompt(support: tuple[dict, ...], example: dict, *, num_fewshot: int) -> str:
+def mmlu_messages(support: tuple[dict, ...], example: dict, *, num_fewshot: int) -> tuple[TextMessage, ...]:
+    """The source's chain-of-thought prompt with each worked example as a user question and an assistant answer.
+
+    The message texts concatenate to the source's one-message prompt.
+    """
     category = example["category"]
     selected = [shot for shot in support if shot["category"] == category][:num_fewshot]
-    return (
-        MMLU_INITIAL_PROMPT.replace("{$}", category)
-        + "\n"
-        + "".join(mmlu_example(shot, including_answer=True) for shot in selected)
-        + mmlu_example(example, including_answer=False)
-    )
+    prefix = MMLU_INITIAL_PROMPT.replace("{$}", category) + "\n"
+    messages = []
+    for shot in selected:
+        answer = shot["cot_content"].replace("A: Let's think step by step.", "Answer: Let's think step by step.")
+        messages += [
+            TextMessage(role="user", content=prefix + mmlu_question(shot)),
+            TextMessage(role="assistant", content=answer + "\n\n"),
+        ]
+        prefix = ""
+    question = mmlu_question(example) + "Answer: Let's think step by step."
+    return (*messages, TextMessage(role="user", content=prefix + question))
 
 
 @lru_cache
@@ -99,14 +102,14 @@ def mmlu_support(root: str) -> tuple[dict, ...]:
 
 def convert_mmlu(row: RawRow, context: ConversionContext) -> TaskSpec:
     support = mmlu_support(str(context.inputs["fewshot"]))
-    variants = tuple(mmlu_prompt(support, row.data, num_fewshot=shots) for shots in range(MMLU_FEWSHOT_COUNT + 1))
+    variants = tuple(mmlu_messages(support, row.data, num_fewshot=shots) for shots in range(MMLU_FEWSHOT_COUNT + 1))
     task = conversation_task(
         row,
-        events=(TextMessage(role="user", content=variants[-1]),),
+        events=variants[-1],
         package=source_package(
             "mmlu_pro", {"expected": row.data["answer"]}, environment=required_grader_environment(context)
         ),
-        evidence={**row.data, "prompt_variants": variants},
+        evidence={**row.data, "prompt_variants": [conversation_messages(events) for events in variants]},
     )
     return task.model_copy(update={"tags": ("eval", "source:evalchemy", "benchmark:MMLUPro")})
 
@@ -124,10 +127,12 @@ def reasoning_item(task: TaskSpec, *, benchmark: str) -> EvaluationItem:
             response_selection="final_or_complete_reasoning",
             variants=tuple(
                 ChatPromptVariant(
-                    context=ConversationInput(events=(TextMessage(role="user", content=prompt),)),
+                    context=ConversationInput(
+                        events=tuple(TextMessage(role=turn["role"], content=turn["content"]) for turn in messages)
+                    ),
                     fewshot=shots,
                 )
-                for shots, prompt in enumerate(evidence["prompt_variants"])
+                for shots, messages in enumerate(evidence["prompt_variants"])
             ),
         )
         if benchmark == "MMLUPro"
@@ -160,7 +165,7 @@ def choice_dataset(
                 name="evalchemy-" + name,
                 source=source,
                 convert=converter,
-                version=scorer_revision("mmlu_pro" if benchmark == "MMLUPro" else "gpqa"),
+                version="2-" + scorer_revision("mmlu_pro") if benchmark == "MMLUPro" else scorer_revision("gpqa"),
                 intended_use=IntendedUse.EVAL,
                 grader=BASIC_GRADER,
                 inputs=inputs,
