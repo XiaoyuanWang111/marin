@@ -17,9 +17,10 @@ also accepts trailing boxed numbers, inline math, equations, explicit answer
 lines, a bare number on the last line, and a type-valid numeric suffix after a
 sentence-ending period. It also recovers a terminal numeric token that exactly
 repeats the reference answer twice without a separator, provided the preceding
-content separately states the same final answer. A doubled token alone is
-ambiguous and does not qualify. Periods immediately after digits do not count
-as sentence boundaries. The extracted answer stored
+content separately states the same final answer or the two copies together are
+not a valid answer. A doubled integer alone is ambiguous and does not qualify.
+Periods immediately after digits do not count as sentence boundaries unless
+the period separates two copies of the same number. The extracted answer stored
 with each sample is the one actually used for scoring. The grader discards
 content before the last `<|end_think|>` marker and rejects an unfinished
 `<|start_think|>` block.

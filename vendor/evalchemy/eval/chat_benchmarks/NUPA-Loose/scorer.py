@@ -24,6 +24,7 @@ _ANSWER_TAIL_RE = re.compile(
     r"(?i)(?:^|\n)\s*(?:(?:so|therefore|thus)[, ]+)?(?:the\s+)?(?:final\s+)?"
     r"(?:answer|result|output)\s*(?:is\s*)?[:=]?\s*([^\s]+)\s*\Z"
 )
+_NUMBER_CONTINUATION_RE = re.compile(r"(?:[\d+-]|\d[.,/eE])\Z")
 _ANSWER_PATTERNS = {
     INTEGER: re.compile(r"^\d+"),
     FLOAT: re.compile(r"^\d+\.\d+"),
@@ -91,12 +92,24 @@ def _final_content(text: str | None) -> str | None:
 def _answer_after_terminal_period(text: str, answer_format: str) -> str | None:
     """Extract a typed answer appended after sentence-ending punctuation."""
     for boundary in range(len(text) - 1, -1, -1):
-        if text[boundary] != "." or (boundary > 0 and text[boundary - 1].isdigit()):
+        if text[boundary] != ".":
             continue
-        answer = _full_answer(text[boundary + 1 :].strip(), answer_format)
+        candidate = text[boundary + 1 :].strip()
+        # A period right after a digit is a decimal point unless the same number ends the text before it: reasoning
+        # that ends with `N.` followed directly by the final answer `N` reads `N.N`.
+        if boundary > 0 and text[boundary - 1].isdigit() and not _ends_with_number(text[:boundary], candidate):
+            continue
+        answer = _full_answer(candidate, answer_format)
         if answer is not None:
             return answer
     return None
+
+
+def _ends_with_number(text: str, number: str) -> bool:
+    """Whether text ends with this number rather than with a longer number."""
+    if not number or not text.endswith(number):
+        return False
+    return _NUMBER_CONTINUATION_RE.search(text[: -len(number)]) is None
 
 
 def _full_answer(candidate: str, answer_format: str) -> str | None:
@@ -130,7 +143,7 @@ def score_prediction(prediction: str | None, gold: str, answer_format: str) -> E
 
 
 def _repeated_terminal_reference(prediction: str | None, gold: str, answer_format: str) -> str | None:
-    """Recover repetition only when a separate final answer confirms it."""
+    """Recover repetition when it cannot be one number or a separate final answer confirms it."""
     prediction = _final_content(prediction)
     if prediction is None:
         return None
@@ -139,6 +152,11 @@ def _repeated_terminal_reference(prediction: str | None, gold: str, answer_forma
     normalized_gold = _normalize_answer(gold)
     if _normalize_answer(terminal_token) != normalized_gold * 2:
         return None
+    copy = terminal_token[: len(terminal_token) // 2]
+    # Two copies of an answer that together are not a valid answer, such as 486.612486.612, cannot be another number.
+    two_copies = copy * 2 == terminal_token and _full_answer(copy, answer_format) is not None
+    if two_copies and _full_answer(terminal_token, answer_format) is None:
+        return normalized_gold
     preceding = tail[: -len(terminal_token)].rstrip()
     if extract_answer(preceding, answer_format) == normalized_gold:
         return normalized_gold
