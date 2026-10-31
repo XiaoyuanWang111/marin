@@ -126,9 +126,15 @@ CASES = [
     ),
     (
         "count:lowercase_counting",
-        {"N": 4},
-        "Ship it now, Ana.",
-        "these words don't stay capitalized",
+        {"N": 2},
+        "The cat sat on a mat, then the dog sat.",
+        "the cat and the dog and the bird",
+    ),
+    (
+        "count:lowercase_counting",
+        {"N": 2},
+        "The sun rose. The sky cleared. We saw the sea.",
+        "The sun rose. We saw the sky, the sea and the hills.",
     ),
     (
         "combination:two_responses",
@@ -395,8 +401,14 @@ CASES = [
     (
         "letters:letter_counting",
         {"N": 3, "relation": "less than"},
-        "Да да",
-        "Yes",
+        "42",
+        "答案是四十二",
+    ),
+    (
+        "letters:letter_counting",
+        {"N": 3, "relation": "at least"},
+        "答案是四十二",
+        "Да",
     ),
     (
         "keywords:no_adjacent_consecutive",

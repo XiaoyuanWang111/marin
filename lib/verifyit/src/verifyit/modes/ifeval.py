@@ -731,12 +731,13 @@ def count_increment_word(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("count:lowercase_counting")
 def lowercase_counting(text: str, params: dict) -> tuple[bool, str]:
-    """Reads "all lowercase words should appear at most N times" as NVIDIA's checker does: at most N in total."""
+    """No lowercase word may appear more than N times; a word with a capital letter, such as "The", is not counted."""
     expected = params.get("N")
     if not isinstance(expected, int):
         return False, "missing N"
-    actual = sum(1 for w in words(text) if w.islower())
-    return actual <= expected, f"lower_words={actual} need<={expected}"
+    counts = Counter(w for w in words(text) if w.islower())
+    repeated = sorted(word for word, count in counts.items() if count > expected)
+    return not repeated, f"most={max(counts.values(), default=0)} need<={expected} repeated={repeated[:5]}"
 
 
 @constraint("count:counting_composition")
@@ -764,11 +765,11 @@ def counting_composition(text: str, params: dict) -> tuple[bool, str]:
 
 @constraint("letters:letter_counting")
 def letter_counting(text: str, params: dict) -> tuple[bool, str]:
-    """The prompt counts letters ("Answer with less than N letters"); like NVIDIA's checker, only a to z."""
+    """The prompt counts letters ("Answer with less than N letters"); letters of every script count."""
     expected = params.get("N")
     if not isinstance(expected, int):
         return False, "missing N"
-    actual = sum(1 for c in text if c.isascii() and c.isalpha())
+    actual = sum(1 for c in text if c.isalpha())
     return _with_relation(actual, params.get("relation", "at least"), expected, "letters:")
 
 

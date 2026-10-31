@@ -91,7 +91,7 @@ brackets. Outside detectable_format:sentence_hyphens, the dot of an abbreviation
 language check is approximate. Passing a check does not repair a bad prompt.
 
 Shared checker details: copy:repeat_phrase requires exactly N copies of the phrase, each with one word other than the
-first and last replaced. letters:letter_counting counts only the Latin letters A to Z, in either case.
+first and last replaced. letters:letter_counting counts letters of every script, so each Han character is one letter.
 startend:end_checker uses literal endswith, including closing delimiters. Use these facts to identify concrete
 prompt/checker mismatches; under-enforcement alone does not make an otherwise meaningful content request unanswerable.
 
