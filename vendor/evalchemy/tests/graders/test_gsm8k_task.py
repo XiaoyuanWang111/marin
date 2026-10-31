@@ -59,6 +59,20 @@ def test_gsm8k_flexible_extraction_keeps_complete_final_box(response, expected):
     assert extract_gsm8k_flexible_answer(response) == expected
 
 
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ("**Tom covered 3\u202f140 kilometres in total.**", "3,140"),
+        ("\\(40{,}000 + 45{,}000 = 85{,}000\\) calories.", "85,000"),
+        ("=40\\,000 \\;+\\;45\\,000\n=85\\,000\\text{ calories}.", "85,000"),
+        ("Current population \\(2 \\times 60,\\!000 = 120,\\!000\\).", "120,000"),
+        ("**Answer: \\$64,800 more with the Widgeteer\u202f3000**.", "$64,800"),
+    ],
+)
+def test_gsm8k_flexible_extraction_reads_digit_separators_without_box(response, expected):
+    assert extract_gsm8k_flexible_answer(response) == expected
+
+
 def test_gsm8k_task_scores_filtered_answer_with_minerva():
     config = load_yaml("eval/lm_eval_tasks/gsm8k/gsm8k.yaml")
     instance = Instance("generate_until", {}, (), 0)
