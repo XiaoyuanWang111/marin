@@ -288,6 +288,18 @@ CASES = [
         "हिंदी एक भाषा है।",
     ),
     (
+        "keywords:palindrome",
+        {},
+        "A man, a plan, a canal: Panama.",
+        "I am here.",
+    ),
+    (
+        "keywords:palindrome",
+        {},
+        "Taco cat is a classic.",
+        "We met at a cafe.",
+    ),
+    (
         "detectable_format:number_highlighted_sections",
         {"num_highlights": 1},
         "Use *this* one.",
@@ -574,6 +586,7 @@ CASES = [
         ("detectable_format:square_brackets", {}, " ".join(["[word]"] * 20_000), True),
         ("keywords:existence", {"keywords": ["b"]}, "a" + "\u0301" * 100_000 + "b", False),
         ("keywords:existence", {"keywords": [""]}, "Hello world.", True),
+        ("keywords:palindrome", {}, " ".join(["ab"] * 20_000), False),
     ],
     ids=[
         "sentence_marks",
@@ -583,6 +596,7 @@ CASES = [
         "many_brackets",
         "keyword_after_marks",
         "empty_keyword",
+        "many_words",
     ],
 )
 def test_check_of_degenerate_text_finishes_within_its_deadline(name, params, text, passed):
