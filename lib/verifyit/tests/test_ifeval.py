@@ -578,6 +578,24 @@ CASES = [
         "यह अच्छा है।",
         "This is good.",
     ),
+    (
+        "language:response_language",
+        {"language": "fi"},
+        "Tämä on hyvä kysymys, ja vastaus on yksinkertainen.",
+        "This is a good question, and the answer is simple.",
+    ),
+    (
+        "language:response_language",
+        {"language": "pl"},
+        "To jest dobre pytanie, a odpowiedź nie jest trudna.",
+        "This is a good question, and the answer is not hard.",
+    ),
+    (
+        "language:response_language",
+        {"language": "sw"},
+        "Hili ni swali zuri, na jibu lake ni rahisi.",
+        "This is a good question, and its answer is easy.",
+    ),
 ]
 
 

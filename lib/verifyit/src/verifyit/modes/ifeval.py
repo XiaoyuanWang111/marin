@@ -112,8 +112,9 @@ NUMBER_ABBREVIATIONS = frozenset({"no", "fig", "vol"})
 # after such a token ends no sentence.
 DOTTED_TOKEN = re.compile(r"\d*[^\W\d_]+(?:\.[^\W\d_]+)+")
 
-# Closed-class words that are cheap evidence a response is in the requested language. Scripts with
-# no entry (zh, ja, ko, ar, th) are checked by their share of non-ASCII characters instead.
+# Closed-class words that are cheap evidence a response is in the requested language. Languages with
+# no hint words (zh, ja, ko, ar, th and the languages not listed) are checked by their share of
+# non-ASCII characters instead, so a language written in Latin script needs hint words.
 LANGUAGE_HINTS: dict[str, set[str]] = {
     "en": {"the", "and", "of", "to", "is", "in", "a"},
     "es": {"el", "la", "y", "de", "que", "en", "un", "es"},
@@ -131,6 +132,9 @@ LANGUAGE_HINTS: dict[str, set[str]] = {
     "vi": {"và", "là", "có", "không", "trong"},
     "tr": {"ve", "bir", "bu", "için", "ile"},
     "nl": {"de", "het", "en", "een", "van", "is"},
+    "fi": {"ja", "ei", "että", "oli", "mutta", "kuin", "myös", "ovat"},
+    "pl": {"się", "nie", "jest", "że", "na", "jak", "dla", "oraz"},
+    "sw": {"na", "ya", "wa", "kwa", "ni", "za", "katika", "kuwa"},
 }
 NON_ASCII_MIN = 10
 NON_ASCII_SHARE = 0.2
