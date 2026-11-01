@@ -92,7 +92,7 @@ language check is approximate. Passing a check does not repair a bad prompt.
 
 Shared checker details: copy:repeat_phrase requires exactly N copies of the phrase, each with one word other than the
 first and last replaced. letters:letter_counting counts letters of every script, so each Han character is one letter.
-startend:end_checker needs the exact phrase, case included, with no word after it, so a closing quote or Markdown
+startend:end_checker matches the phrase ignoring letter case, with no word after it, so a closing quote or Markdown
 markup may follow it. Use these facts to identify concrete prompt/checker mismatches; under-enforcement alone does not
 make an otherwise meaningful content request unanswerable.
 
