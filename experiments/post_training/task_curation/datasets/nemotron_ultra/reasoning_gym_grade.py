@@ -11,7 +11,9 @@ metadata; the metadata's ``source_dataset`` names the task.
 import json
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import reasoning_gym
 from verifyit.modes.extract import extract_markdown_answer
@@ -19,6 +21,9 @@ from verifyit.modes.extract import extract_markdown_answer
 sys.path.insert(0, "/tests")
 
 from skyrl_gym.envs.nemotron_ultra.answer_extraction import final_answer_text, last_boxed_answer
+
+SCORER_ERRORS = (ValueError, TypeError, AttributeError, KeyError, OverflowError, RecursionError)
+"""What task scorers raise on a reply they cannot read. Any other exception stays a grader failure."""
 
 
 def candidate(reply: str) -> str:
@@ -36,11 +41,20 @@ def candidate(reply: str) -> str:
     return text.strip()
 
 
+def score(scorer: Callable[[str, Any], float], reply: str, entry: Any) -> float:
+    """A reply that makes the scorer raise scores 0."""
+    try:
+        return float(scorer(reply, entry))
+    except SCORER_ERRORS as error:
+        print(f"The scorer raised {error!r}", file=sys.stderr)
+        return 0.0
+
+
 def main() -> None:
     contract = json.loads(Path("/tests/config.json").read_text())["contract"]
     entry = {"question": contract["question"], "answer": contract.get("answer"), "metadata": contract["metadata"]}
     scorer = reasoning_gym.get_score_answer_fn(contract["metadata"]["source_dataset"])
-    print(float(scorer(candidate(Path("/app/answer.txt").read_text()), entry)))
+    print(score(scorer, candidate(Path("/app/answer.txt").read_text()), entry))
 
 
 if __name__ == "__main__":

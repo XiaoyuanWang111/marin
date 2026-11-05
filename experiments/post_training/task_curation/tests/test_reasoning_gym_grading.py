@@ -52,7 +52,7 @@ def generated_task(task_name: str, index: int, **entry_changes) -> tuple[TaskSpe
     return converted_task(RECIPES["reasoning_gym_generated"], row), entry["answer"]
 
 
-@pytest.mark.parametrize(("task_name", "index"), [("arc_agi", 0), ("gsm_symbolic", 23)])
+@pytest.mark.parametrize(("task_name", "index"), [("arc_agi", 0), ("gsm_symbolic", 23), ("prime_factorization", 0)])
 def test_generated_grade_scores_against_the_regenerated_entry(task_name, index, machines):
     task, answer = generated_task(task_name, index)
     passing = grade(task, reply(f"Work shown.\nAnswer: {answer}"), machines, GRADING_MEMORY_MB)

@@ -16,6 +16,7 @@ import dataclasses
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,8 @@ from generate import ROWS_PER_TASK, encoded, task_seed
 
 CONFIG = Path("/tests/config.json")
 ANSWER = Path("/app/answer.txt")
+SCORER_ERRORS = (ValueError, TypeError, AttributeError, KeyError, OverflowError, RecursionError)
+"""What task scorers raise on a reply they cannot read. Any other exception stays a grader failure."""
 
 
 def regenerated_entry(generation: dict[str, Any]) -> dict[str, Any]:
@@ -44,6 +47,15 @@ def candidate(reply: str) -> str:
     return after.strip() if marker else reply.strip()
 
 
+def score(scorer: Callable[[str, Any], float], reply: str, entry: Any) -> float:
+    """A reply that makes the scorer raise scores 0."""
+    try:
+        return float(scorer(reply, entry))
+    except SCORER_ERRORS as error:
+        print(f"The scorer raised {error!r}", file=sys.stderr)
+        return 0.0
+
+
 def main() -> None:
     contract = json.loads(CONFIG.read_text())["contract"]
     generation = contract["generation"]
@@ -55,7 +67,7 @@ def main() -> None:
         if encoded(entry) != contract["entry"]:
             raise ValueError("Regenerated entry differs from the recorded entry")
         scorer = reasoning_gym.get_score_answer_fn(generation["task"])
-        reward = float(scorer(candidate(ANSWER.read_text(errors="replace")), entry))
+        reward = score(scorer, candidate(ANSWER.read_text(errors="replace")), entry)
     print(reward)
 
 
