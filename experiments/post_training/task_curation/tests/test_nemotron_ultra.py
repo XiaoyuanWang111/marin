@@ -245,6 +245,17 @@ def test_reasoning_gym_rejects_confirmed_invalid_tsumego_ground_truth():
     )
 
 
+@pytest.mark.parametrize("task", ["coin_flip", "game_of_life_halting"])
+def test_reasoning_gym_rejects_tasks_a_constant_reply_passes(task):
+    path = "ultra_sft_step3200_reasoning_gym"
+    row = COMPONENT_ROWS[path]
+    result = convert_row(
+        RECIPES[pipeline_name("rlvr2", path)], {**row, "metadata": {**row["metadata"], "source_dataset": task}}
+    )
+    assert isinstance(result, ImportRejection)
+    assert (result.kind, result.reason) == (ImportFailureKind.SOURCE_DEFECT, "constant_reply_passes")
+
+
 def test_competitive_code_rejects_constructive_problem_without_its_special_judge():
     path = "ultra_sft_step3200_comp_coding"
     result = convert_row(
