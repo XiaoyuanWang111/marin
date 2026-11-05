@@ -4,15 +4,16 @@
 """SkyRL code and text-to-SQL sources, graded by their vendored source scorers.
 
 Each task ships a grade script from beside this module with the scorer it imports from
-``scorers/``: the APPS evaluator for APPS, the SkyRL LiveCodeBench evaluator for Eurus-2 and
-verifiable-coding problems, and the SkyRL text-to-SQL comparator for Gretel. Conversion prepares
-LiveCodeBench cases and the text-to-SQL ground truth with the scorer's own preparation functions,
-as SkyRL's dataset builders do, so a row the scorer cannot grade is rejected here rather than
+``scorers/``: the APPS evaluator for APPS and call-based Eurus-2 rows, the SkyRL LiveCodeBench evaluator
+for other Eurus-2 rows and verifiable-coding problems, and the SkyRL text-to-SQL comparator for Gretel.
+Conversion prepares LiveCodeBench cases and the text-to-SQL ground truth with the scorer's own preparation
+functions, as SkyRL's dataset builders do, so a row the scorer cannot grade is rejected here rather than
 failing at grading. ``config.json`` also keeps the source's known solution, which the golden
 control replays.
 """
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -106,10 +107,8 @@ def scored_task(
     return conversation_task(row, events=_with_instruction(events, instruction), package=package, evidence=evidence)
 
 
-def convert_apps(row: RawRow, context: ConversionContext) -> TaskSpec | ImportRejection:
-    question, encoded = row.data.get("question"), row.data.get("input_output")
-    if not isinstance(question, str) or not isinstance(encoded, str):
-        return source_defect("missing_prompt_or_tests", "question and input_output JSON are required")
+def decoded_apps_tests(encoded: str) -> dict[str, Any] | ImportRejection:
+    """The APPS evaluator's tests from their JSON text, or the rejection for tests it cannot run."""
     try:
         tests = json.loads(encoded)
     except json.JSONDecodeError:
@@ -125,6 +124,16 @@ def convert_apps(row: RawRow, context: ConversionContext) -> TaskSpec | ImportRe
         json.dumps(tests, allow_nan=False)
     except ValueError:
         return source_defect("nonfinite_test_contract", "input_output contains a non-finite number")
+    return tests
+
+
+def convert_apps(row: RawRow, context: ConversionContext) -> TaskSpec | ImportRejection:
+    question, encoded = row.data.get("question"), row.data.get("input_output")
+    if not isinstance(question, str) or not isinstance(encoded, str):
+        return source_defect("missing_prompt_or_tests", "question and input_output JSON are required")
+    tests = decoded_apps_tests(encoded)
+    if isinstance(tests, ImportRejection):
+        return tests
     # APPS leaves ``solutions`` empty when it has none; anything else must be a JSON list.
     try:
         solutions = json.loads(row.data.get("solutions") or "[]")
@@ -195,6 +204,34 @@ def is_code_row(row: dict[str, Any], _context: ConversionContext) -> bool:
     return row["ability"] == "code"
 
 
+def _eurus2_call_based_task(
+    row: RawRow,
+    context: ConversionContext,
+    events: Sequence[TextMessage],
+    tests: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+) -> TaskSpec | ImportRejection:
+    """A call-based Eurus-2 row, graded by the APPS evaluator its test layout comes from.
+
+    Most of these rows store each return value in a one-element list. The APPS evaluator accepts the
+    value plain or in the list, and the LiveCodeBench comparison pays only the list.
+    """
+    if not all(isinstance(arguments, list) for arguments in tests["inputs"]):
+        return source_defect("invalid_test_cases", "Call-based inputs must be argument lists")
+    function = tests["fn_name"]
+    if not any(re.search(rf"\b{re.escape(function)}\b", event.content) for event in events):
+        return source_defect("hidden_function_name", f"The tests call {function}, which the prompt does not name")
+    return scored_task(
+        row,
+        context,
+        events=events,
+        instruction=CODE_INSTRUCTION,
+        grade=APPS_GRADE,
+        config={"input_output": tests, "reference_reply": None},
+        evidence=evidence,
+    )
+
+
 def convert_eurus2_code(row: RawRow, context: ConversionContext) -> TaskSpec | ImportRejection:
     messages, reward = row.data.get("prompt"), row.data.get("reward_model")
     ground_truth = reward.get("ground_truth") if isinstance(reward, dict) else None
@@ -203,7 +240,10 @@ def convert_eurus2_code(row: RawRow, context: ConversionContext) -> TaskSpec | I
     events = tuple(TextMessage(role=message["role"], content=message["content"]) for message in messages)
     evidence = {key: row.data[key] for key in ("extra_info", "data_source", "ability") if key in row.data}
     # Eurus-2 publishes no solutions, so these tasks have no golden control.
-    return _lcb_task(row, context, events, ground_truth, None, evidence)
+    tests = decoded_apps_tests(ground_truth)
+    if isinstance(tests, ImportRejection) or not isinstance(tests.get("fn_name"), str):
+        return _lcb_task(row, context, events, ground_truth, None, evidence)
+    return _eurus2_call_based_task(row, context, events, tests, evidence)
 
 
 def convert_verifiable_code(row: RawRow, context: ConversionContext) -> TaskSpec | ImportRejection:
@@ -335,7 +375,7 @@ def sources() -> list[RlDataSource[CurationRecipe]]:
                     select=is_code_row,
                 ),
                 convert=convert_eurus2_code,
-                version="1",
+                version="2",
                 intended_use=IntendedUse.TRAIN,
                 rubric=EURUS2_CODE_RUBRIC,
                 controls=CONTROLS,

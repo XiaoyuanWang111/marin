@@ -4,7 +4,10 @@
 """SkyRL declarations turn source-shaped rows into tasks with the right graders."""
 
 import json
+import subprocess
+import sys
 from copy import deepcopy
+from pathlib import Path
 from typing import cast
 
 import pyarrow as pa
@@ -286,6 +289,47 @@ def test_eurus2_code_selects_code_rows_and_keeps_every_prompt_message():
     task = converted_task(pipeline, ROWS["eurus2_code"])
     assert [event.role for event in task.context.events] == ["system", "user"]
     assert grader_config(task)["test_cases"] == [{"input": "1 2\n", "output": "3\n", "testtype": "stdin"}]
+
+
+def script_reward(task: TaskSpec, reply: str, tmp_path: Path) -> float:
+    """The task's grade script run here, with /tests and /app moved under ``tmp_path``.
+
+    CI skips the docker-marked grading tests, so this keeps the reward path in the default lane.
+    """
+    tests, answer = tmp_path / "tests", tmp_path / "answer.txt"
+    tests.mkdir()
+    answer.write_text(reply)
+    for resource in task.resources.verifier:
+        (tests / resource.path).parent.mkdir(parents=True, exist_ok=True)
+        (tests / resource.path).write_bytes(resource_bytes(resource))
+    script = (tests / "grade.py").read_text()
+    (tests / "grade.py").write_text(script.replace("/tests", str(tests)).replace("/app/answer.txt", str(answer)))
+    result = subprocess.run([sys.executable, str(tests / "grade.py")], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[-500:]
+    return float(result.stdout.splitlines()[-1])
+
+
+def eurus2_add_row(statement: str) -> dict:
+    """A call-based Eurus-2 row in the APPS layout, where each return value sits in a one-element list."""
+    tests = {"fn_name": "add", "inputs": [[1, 2], [3, 4]], "outputs": [[3], [7]]}
+    return {
+        **ROWS["eurus2_code"],
+        "prompt": [{"role": "user", "content": statement}],
+        "reward_model": {"ground_truth": json.dumps(tests), "style": "rule"},
+    }
+
+
+@pytest.mark.parametrize(("returned", "reward"), [("a + b", 1.0), ("[a + b]", 1.0), ("a - b", 0.0)])
+def test_eurus2_call_based_row_pays_the_return_value_plain_or_in_a_list(returned, reward, tmp_path):
+    task = converted_task(RECIPES["eurus2_code"], eurus2_add_row("Write add(a, b), which returns the sum."))
+    reply = f"```python\ndef add(a, b):\n    return {returned}\n```"
+    assert script_reward(task, reply, tmp_path) == reward
+
+
+def test_eurus2_row_that_hides_the_called_function_is_rejected():
+    result = convert_row(RECIPES["eurus2_code"], eurus2_add_row("Return the sum of the address and two numbers."))
+    assert isinstance(result, ImportRejection)
+    assert (result.kind, result.reason) == (ImportFailureKind.SOURCE_DEFECT, "hidden_function_name")
 
 
 @pytest.mark.parametrize(
