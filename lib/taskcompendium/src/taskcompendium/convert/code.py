@@ -14,10 +14,36 @@ THREAD_ENVIRONMENT = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"}
 """Run each test's numeric libraries on one thread."""
 CODE_BLOCK = re.compile(r"```(?:\w+)?\n(.*?)```", re.DOTALL)
 """A fenced code block as the source scorers match one; they run the last block in a reply."""
+_ANY_VALID_OUTPUT = re.compile(
+    r"\b(if|when|in case)\b[^.\n]{0,40}\b(several|multiple|many|more than one)\b[^.\n]{0,80}\b(any|either)\b"
+    r"|\b(several|multiple|many|more than one)\b[^.\n]{0,30}\b(answers?|solutions?|ways?|outputs?|results?)\b"
+    r"[^.\n]{0,60}\b(any|either)\b"
+    r"|\b(print|output|find|return)\s+any\s+(one\s+)?(of\s+(them|these)|valid|correct|possible|such|solution|answer)\b"
+    r"|\bany\s+(valid|correct)\s+(answer|solution|output|sequence|permutation|arrangement|assignment|construction)\b"
+    r"|\b(answers?|solutions?)\s+(is|are)\s+not\s+unique\b",
+    re.IGNORECASE,
+)
+_ONE_ANSWER_CHOSEN = re.compile(
+    r"lexicographically|smallest possible|with the (smallest|largest|minimum|maximum)|the one with", re.IGNORECASE
+)
+_FLOAT_TOLERANCE = re.compile(
+    r"absolute or relative|relative or absolute|relative error|absolute error"
+    r"|error (does not|must not|should not|doesn't) exceed"
+    r"|within (an? )?(error|tolerance)|accurate to within|considered correct if",
+    re.IGNORECASE,
+)
+"""Wider than TaskTrove's ``_FLOAT_ERROR_CLAUSE_RE``, which needs the word "error" and cannot be imported here."""
+_INTERACTIVE = re.compile(r"\binteractive problem\b", re.IGNORECASE)
+_FUNCTION_TEMPLATE = re.compile(
+    r"you (don'?t|do not) (need|have) to (read|take) (any )?input|no need to read input"
+    r"|complete the (given )?(function|method|class)",
+    re.IGNORECASE,
+)
+_INPUT_FORMAT = re.compile(r"input format|-+\s*input\s*-+", re.IGNORECASE)
 
 
-def validate_code_cases(cases: Mapping[str, Any] | list[Any]) -> None:
-    """Reject decoded test layouts the LiveCodeBench scorer cannot normalize."""
+def code_case_mode(cases: Mapping[str, Any] | list[Any]) -> str:
+    """The test cases' mode, stdin or functional. Raises for a layout the LiveCodeBench scorer cannot normalize."""
     if isinstance(cases, Mapping) and "test_cases" in cases:
         if cases.get("language") not in (None, "python"):
             raise ValueError("LCB supports only Python verification specs")
@@ -54,6 +80,21 @@ def validate_code_cases(cases: Mapping[str, Any] | list[Any]) -> None:
             raise ValueError("Unsupported LCB test-case type")
     if len(modes) != 1 or len(names) > 1:
         raise ValueError("LCB cases must share one execution mode and function name")
+    return modes.pop()
+
+
+def ungradable_statement(statement: str, *, stdin_tests: bool) -> str | None:
+    """The rejection reason when exact comparison cannot grade this statement, else None."""
+    any_valid = _ANY_VALID_OUTPUT.search(statement)
+    if any_valid and not _ONE_ANSWER_CHOSEN.search(statement, any_valid.end(), any_valid.end() + 120):
+        return "any_valid_output"
+    if _FLOAT_TOLERANCE.search(statement):
+        return "float_tolerance"
+    if _INTERACTIVE.search(statement):
+        return "interactive_problem"
+    if stdin_tests and _FUNCTION_TEMPLATE.search(statement) and not _INPUT_FORMAT.search(statement):
+        return "function_template_with_example_tests"
+    return None
 
 
 def has_code_block(response: str) -> bool:
