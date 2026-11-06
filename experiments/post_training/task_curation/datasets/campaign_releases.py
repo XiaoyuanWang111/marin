@@ -101,7 +101,12 @@ def sources() -> list[RlDataSource]:
                     "8,045 quality-admitted SWE-Smith tasks. The release keeps only tasks that passed "
                     "the Daytona oracle and a Good quality verdict; quality review is not a "
                     "model-solving accuracy claim, and campaign-specific train and validation splits "
-                    "remain in the private archive."
+                    "remain in the private archive. Every task exposes its fix to the agent: the task branch "
+                    "starts from the mirror's main branch, which holds the fix "
+                    "(https://github.com/marin-community/marin/issues/10212). In 372 tasks the setup alone already "
+                    "passes the verifier. In 1,166 tasks, mini-swe-agent's tool environment or the base image also "
+                    "holds a copy of the package without the bug "
+                    "(https://github.com/marin-community/marin/issues/10223). Rebuild before training."
                 ),
                 dataset=_public_release(
                     "smartie-continuation-20261016/swesmith", "0e8137a6a1eca1e2c8c12eeb90a16c5d7f1f750c"
