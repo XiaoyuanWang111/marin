@@ -76,7 +76,16 @@ GENERATOR_URL = (
 )
 GENERATOR_SHA256 = "7f17a3eddb13c015d7d4a755ed576a061df889faf9468bcc2cca334ebe9e0435"
 GENERATOR_ERROR_BYTES = 8192
+CONSTANT_REPLY_TASKS = {
+    "coin_flip": (
+        "The scorer compares only as many characters as the shorter string has, "
+        "so the reply 0 scores 1.0 on most entries"
+    ),
+    "game_of_life_halting": "The scorer compares the truth values of two strings, so any nonempty reply scores 1.0",
+}
+"""Tasks whose scorer pays a reply that ignores the question. The Ultra converter rejects their rows too."""
 EXCLUDED_GENERATORS = (
+    *CONSTANT_REPLY_TASKS.items(),
     ("composite", "Orchestration constructor requires explicit component DatasetSpec configuration"),
     (
         "figlet_font",
@@ -364,7 +373,7 @@ def sources() -> list[RlDataSource[CurationRecipe]]:
                     parts=GeneratedRows(GENERATOR_VERSION, EXCLUDED_GENERATORS, PYTHON_HASH_SEED, GENERATOR_PARTS),
                 ),
                 convert=convert_generated,
-                version="1",
+                version="2",
                 intended_use=IntendedUse.TRAIN,
                 rubric=GENERATED_RUBRIC,
                 controls=GENERATED_CONTROLS,

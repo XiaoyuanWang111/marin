@@ -3,10 +3,16 @@
 
 """Reasoning Gym tasks are graded by their own task scorer, on regenerated entries where generated."""
 
+import dataclasses
 import json
+import os
+import shutil
+import subprocess
+import sys
 import tomllib
 import zipfile
 from fractions import Fraction
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -33,6 +39,7 @@ from experiments.post_training.task_curation.tests.conversion import (
 
 RECIPES = {source.name: cast(CurationRecipe, source.config) for source in declarations.sources()}
 EXCLUDED = (("composite", "Requires explicit component configuration"),)
+ULTRA = Path(declarations.__file__).parents[1] / "nemotron_ultra"
 TASKTROVE_INSTRUCTION = "Solve x + 8 = 50. Write ONLY your final answer to **`/app/answer.txt`**"
 TASKTROVE_ENTRY = {"question": "Solve x + 8 = 50.", "answer": "42", "metadata": {"source_dataset": "simple_equations"}}
 GRADER_FILES = {
@@ -102,6 +109,52 @@ def test_generated_row_a_fresh_dataset_does_not_reproduce_is_rejected():
     result = convert_row(RECIPES["reasoning_gym_generated"], {**GENERATED_ROW, "reproducible": False})
     assert isinstance(result, ImportRejection)
     assert (result.kind, result.reason) == (ImportFailureKind.SOURCE_DEFECT, "irreproducible_entry")
+
+
+def run_grade_script(tmp_path: Path, script: Path, contract: dict, reply: str) -> subprocess.CompletedProcess:
+    """Run a shipped grade script with its fixed /tests and /app paths moved under ``tmp_path``.
+
+    CI skips the docker-marked grading tests, so this keeps the scripts' reward path in the default lane.
+    """
+    (tmp_path / "config.json").write_text(json.dumps({"contract": contract}))
+    (tmp_path / "answer.txt").write_text(reply)
+    text = (
+        script.read_text()
+        .replace("/tests/config.json", f"{tmp_path}/config.json")
+        .replace("/app/answer.txt", f"{tmp_path}/answer.txt")
+        .replace('"/tests"', f'"{tmp_path}"')
+    )
+    (tmp_path / "grade.py").write_text(text)
+    environment = {**os.environ, "PYTHONHASHSEED": "0"}
+    return subprocess.run([sys.executable, str(tmp_path / "grade.py")], capture_output=True, text=True, env=environment)
+
+
+def generated_grade(tmp_path: Path, task: str, reply: str) -> subprocess.CompletedProcess:
+    seed = generate.task_seed(task)
+    dataset = reasoning_gym.create_dataset(task, size=generate.ROWS_PER_TASK, seed=seed)
+    generation = {
+        "task": task,
+        "seed": seed,
+        "index": 0,
+        "config": generate.encoded(dataclasses.asdict(dataset.config)),
+        "python_hash_seed": 0,
+    }
+    shutil.copy(generate.__file__, tmp_path / "generate.py")
+    contract = {"entry": generate.encoded(dataset[0]), "generation": generation}
+    return run_grade_script(tmp_path, Path(declarations.__file__).with_name("reasoning_gym_grade.py"), contract, reply)
+
+
+def ultra_grade(tmp_path: Path, task: str, reply: str) -> subprocess.CompletedProcess:
+    entry = generate.encoded(reasoning_gym.create_dataset(task, size=1, seed=generate.task_seed(task))[0])
+    shutil.copytree(ULTRA / "scorers/skyrl_gym", tmp_path / "skyrl_gym")
+    return run_grade_script(tmp_path, ULTRA / "reasoning_gym_grade.py", entry, reply)
+
+
+@pytest.mark.parametrize("grade_script", [generated_grade, ultra_grade])
+def test_grade_scripts_score_a_reply_that_makes_the_scorer_raise_as_zero(tmp_path, grade_script):
+    result = grade_script(tmp_path, "prime_factorization", "definitely wrong")
+    assert result.returncode == 0, result.stderr[-500:]
+    assert result.stdout.splitlines()[-1] == "0.0"
 
 
 def test_generator_transport_keeps_symbolic_integers_exact():
