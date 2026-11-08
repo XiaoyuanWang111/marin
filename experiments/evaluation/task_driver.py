@@ -5,15 +5,23 @@
 
 import argparse
 import asyncio
+import contextlib
+import json
 import logging
 import uuid
 from pathlib import Path
 
+from finestore.reader import ReadView
 from iris.cli.connect import open_iris_client
 from iris.client.client import IrisClient, Job
 from iris.cluster.types import Entrypoint, EnvironmentSpec, ResourceSpec
 from iris.rpc import job_pb2
-from marin.rollouts.evaluation import EvaluationInfrastructureError, EvaluationRunConfig, run_evaluation
+from marin.rollouts.evaluation import (
+    RUN_OBJECT,
+    EvaluationInfrastructureError,
+    EvaluationRunConfig,
+    run_evaluation,
+)
 from openai import AsyncOpenAI
 from rigging.config_discovery import find_project_root
 from rigging.filesystem.s3_compat import configure_coreweave_s3
@@ -23,7 +31,7 @@ from rigging.timing import Duration, retry_with_backoff
 from rolloutengine.chat import ChatModel
 from rolloutengine.completion import CompletionModel
 from rolloutengine.likelihood import VllmLikelihood
-from rolloutengine.models import MachineRuntimeSpec
+from rolloutengine.models import MachineRuntimeSpec, ModelRequest, ModelResponseError, ModelTurn
 from shellbox.backends.local.machine import LocalMachineFactory
 from shellbox.machine import Backend, NetworkPolicy
 from transformers import AutoTokenizer
@@ -57,37 +65,64 @@ def execution_config(config: EvaluationRunConfig) -> EvaluationRunConfig:
     return config.model_copy(update={"verifier_machine": verifier})
 
 
+async def _no_endpoint(_request: ModelRequest) -> ModelTurn:
+    raise ModelResponseError("No endpoint was supplied, and no stored model response answers this request", response={})
+
+
+def stored_config(root: str) -> EvaluationRunConfig:
+    """The run configuration recorded in a result root."""
+    configure_coreweave_s3()
+    saved = ReadView(root).read_blob(RUN_OBJECT)
+    if saved is None:
+        raise ValueError(f"No evaluation run is stored in {root}")
+    return EvaluationRunConfig.model_validate(json.loads(saved)["config"])
+
+
 async def execute(
     datasets: tuple[str, ...],
     output: str,
     config: EvaluationRunConfig,
-    endpoint: str,
-    api_key: str,
+    endpoint: str | None,
+    api_key: str | None,
     judge_connection: JudgeConnection | None,
+    *,
+    responses_from: str | None = None,
 ) -> None:
-    """Evaluate the supplied corpora and persist raw results, retaining completed attempts on resume."""
+    """Evaluate the supplied corpora and persist raw results, retaining completed attempts on resume.
+
+    Model responses stored in the result root ``responses_from`` answer identical requests. Without an endpoint,
+    the other generation attempts fail as retryable, and corpora scored by likelihood are refused.
+    """
     configure_coreweave_s3()
     config = execution_config(config)
     tokenizer = AutoTokenizer.from_pretrained(
         config.model.tokenizer, revision=config.model.tokenizer_revision, trust_remote_code=False
     )
     prefix = tokenizer.bos_token_id if tokenizer.bos_token_id is not None else tokenizer.eos_token_id
-    if prefix is None:
+    if endpoint is not None and prefix is None:
         raise ValueError("Likelihood scoring needs a tokenizer BOS or EOS prefix token")
     machines = {Backend.LOCAL: LocalMachineFactory()}
-    async with AsyncOpenAI(
-        base_url=endpoint, api_key=api_key, max_retries=0, timeout=config.limits.model_turn_timeout
-    ) as client:
+    connection = (
+        AsyncOpenAI(base_url=endpoint, api_key=api_key, max_retries=0, timeout=config.limits.model_turn_timeout)
+        if endpoint is not None
+        else contextlib.nullcontext()
+    )
+    async with connection as client:
         await run_evaluation(
             datasets,
             output,
             config,
-            ChatModel(client, config.model.name, config.max_tokens),
-            completion_model=CompletionModel(client, config.model.name),
-            likelihood=VllmLikelihood(client, config.model.name, tokenizer, config.model.context_window, prefix),
+            ChatModel(client, config.model.name, config.max_tokens) if client is not None else _no_endpoint,
+            completion_model=CompletionModel(client, config.model.name) if client is not None else _no_endpoint,
+            likelihood=(
+                VllmLikelihood(client, config.model.name, tokenizer, config.model.context_window, prefix)
+                if client is not None
+                else None
+            ),
             machine_factories=machines,
             tokenizer=tokenizer,
             judge_connection=judge_connection,
+            reuse_from=responses_from,
         )
 
 
@@ -95,24 +130,33 @@ def execute_with_retries(
     datasets: tuple[str, ...],
     output: str,
     config: EvaluationRunConfig,
-    endpoint: str,
-    api_key: str,
+    endpoint: str | None,
+    api_key: str | None,
     judge_connection: JudgeConnection | None,
     *,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    responses_from: str | None = None,
 ) -> None:
     """Resume infrastructure failures with the same run identity and Marin's standard backoff."""
     if max_attempts < 1:
         raise ValueError("max_attempts must be positive")
     retry_with_backoff(
-        lambda: asyncio.run(execute(datasets, output, config, endpoint, api_key, judge_connection)),
+        lambda: asyncio.run(
+            execute(datasets, output, config, endpoint, api_key, judge_connection, responses_from=responses_from)
+        ),
         retryable=lambda error: isinstance(error, EvaluationInfrastructureError),
         max_attempts=max_attempts,
         operation="TaskSpec evaluation",
     )
 
 
-def run_worker(datasets: tuple[str, ...], output: str, config: EvaluationRunConfig, max_attempts: int) -> None:
+def run_worker(
+    datasets: tuple[str, ...],
+    output: str,
+    config: EvaluationRunConfig,
+    max_attempts: int,
+    responses_from: str | None = None,
+) -> None:
     """Read connections from Iris secret files outside the grader machines."""
     logging.basicConfig(level=logging.INFO)
     # Iris endpoint URLs can contain scoped credentials.
@@ -120,14 +164,16 @@ def run_worker(datasets: tuple[str, ...], output: str, config: EvaluationRunConf
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     judge_endpoint = get_secret(JUDGE_ENDPOINT)
     judge = JudgeConnection(judge_endpoint, require_secret(JUDGE_API_KEY)) if judge_endpoint else None
+    endpoint = (get_secret(SOLVER_ENDPOINT) or None) if responses_from else require_secret(SOLVER_ENDPOINT)
     execute_with_retries(
         datasets,
         output,
         config,
-        require_secret(SOLVER_ENDPOINT),
-        require_secret(SOLVER_API_KEY),
+        endpoint,
+        require_secret(SOLVER_API_KEY) if endpoint else None,
         judge,
         max_attempts=max_attempts,
+        responses_from=responses_from,
     )
 
 
@@ -142,14 +188,19 @@ def submit_evaluation(
     timeout: int,
     secrets: dict[str, str],
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    responses_from: str | None = None,
 ) -> Job:
     """Submit a disposable privileged CPU worker; Shellbox contains every grader command."""
-    if any(not StoragePath(root).is_remote for root in (*datasets, output)):
+    roots = (*datasets, output, *((responses_from,) if responses_from else ()))
+    if any(not StoragePath(root).is_remote for root in roots):
         raise ValueError(
-            "Iris evaluation requires shared object-storage corpus and output roots; use --local for local files"
+            "Iris evaluation requires shared object-storage corpus, output and --responses-from roots; "
+            "use --local for local files"
         )
     return client.submit(
-        entrypoint=Entrypoint.from_callable(run_worker, datasets, output, execution_config(config), max_attempts),
+        entrypoint=Entrypoint.from_callable(
+            run_worker, datasets, output, execution_config(config), max_attempts, responses_from
+        ),
         name=name,
         resources=resources,
         environment=EnvironmentSpec(
@@ -169,10 +220,15 @@ def main() -> None:
     )
     parser.add_argument("--output", required=True, help="FineStore archive root, including an existing run to resume.")
     parser.add_argument(
-        "--config", required=True, help="EvaluationRunConfig JSON, including immutable model/tokenizer IDs."
+        "--config",
+        help="EvaluationRunConfig JSON, including immutable model/tokenizer IDs; defaults to --responses-from's.",
     )
-    endpoint = parser.add_mutually_exclusive_group(required=True)
-    endpoint.add_argument("--endpoint", help="OpenAI-compatible base URL.")
+    parser.add_argument(
+        "--responses-from",
+        help="Result root whose stored model responses answer identical requests, as when regrading a corrected corpus.",
+    )
+    endpoint = parser.add_mutually_exclusive_group()
+    endpoint.add_argument("--endpoint", help="OpenAI-compatible base URL; optional with --responses-from.")
     endpoint.add_argument(
         "--endpoint-file", type=Path, help="Read the base URL, including any scoped credential, from a file."
     )
@@ -199,10 +255,17 @@ def main() -> None:
     arguments = parser.parse_args()
     if arguments.max_attempts < 1:
         parser.error("--max-attempts must be positive")
-    config = EvaluationRunConfig.model_validate_json(StoragePath(arguments.config).read_text())
-    base_url = arguments.endpoint_file.read_text().strip() if arguments.endpoint_file else arguments.endpoint
+    responses_from = arguments.responses_from
+    base_url = (arguments.endpoint_file.read_text().strip() if arguments.endpoint_file else arguments.endpoint) or None
+    if not responses_from and (arguments.config is None or base_url is None):
+        parser.error("--config and an endpoint are required without --responses-from")
+    config = (
+        EvaluationRunConfig.model_validate_json(StoragePath(arguments.config).read_text())
+        if arguments.config
+        else stored_config(responses_from)
+    )
     datasets = tuple(arguments.dataset)
-    api_key = require_secret(arguments.api_key_env)
+    api_key = require_secret(arguments.api_key_env) if base_url else None
     if arguments.local:
         judge = (
             JudgeConnection(arguments.judge_endpoint, require_secret(arguments.judge_api_key_env))
@@ -213,10 +276,17 @@ def main() -> None:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
         execute_with_retries(
-            datasets, arguments.output, config, base_url, api_key, judge, max_attempts=arguments.max_attempts
+            datasets,
+            arguments.output,
+            config,
+            base_url,
+            api_key,
+            judge,
+            max_attempts=arguments.max_attempts,
+            responses_from=responses_from,
         )
         return
-    secrets = {SOLVER_ENDPOINT: base_url, SOLVER_API_KEY: api_key}
+    secrets = {SOLVER_ENDPOINT: base_url, SOLVER_API_KEY: api_key} if base_url and api_key else {}
     if arguments.judge_endpoint:
         secrets[JUDGE_ENDPOINT] = arguments.judge_endpoint
         secrets[JUDGE_API_KEY] = require_secret(arguments.judge_api_key_env)
@@ -231,6 +301,7 @@ def main() -> None:
             timeout=arguments.timeout,
             secrets=secrets,
             max_attempts=arguments.max_attempts,
+            responses_from=responses_from,
         )
         print(job.job_id)
         if not arguments.no_wait:
