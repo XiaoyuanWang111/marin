@@ -394,15 +394,14 @@ def compare_scores(before: ReadView, after: ReadView) -> dict[str, ScoreComparis
     """Compare each benchmark's scores in two archives and count the trials whose metric values changed.
 
     The archives are typically a run and a regrade of its stored responses, or two runs of the same corpora.
-    ``before`` and ``after`` of each benchmark are the ``benchmark_scores`` of each archive, the scores that
-    ``score_curated_record`` derives. Trials pair by benchmark, source row and trial index, so a run on a republished
-    corpus, whose dataset snapshot has a new identity, still pairs with the original. Each archive contributes the
-    attempt that ``terminal_attempts`` chooses for a trial; attempts left at ``started`` and earlier retries never
-    count. A trial has a value for a metric when its terminal attempt is scored and its sample holds the metric, the
-    primary metric falling back to the grading score, as in the scores. ``changes`` covers each metric declared in
-    either archive. A trial with a value in one archive only counts in ``before_only`` or ``after_only``: its row is
-    absent from the other archive, was not selected there, ended unscored there, or lacks the metric there. A benchmark
-    absent from one archive has ``None`` on that side.
+    ``before`` and ``after`` hold each archive's ``benchmark_scores``. Trials pair by benchmark, source row and trial
+    index. The dataset snapshot is not part of the key, so a run on a republished corpus pairs with the original run.
+    Each archive contributes the latest finished attempt of each trial; attempts left at ``started`` and earlier
+    retries never count. A trial has a value for a metric when that attempt is scored and its sample records the
+    metric, with the primary metric falling back to the grading score. These are the values that the scores reduce.
+    ``changes`` covers every metric declared in either archive. A trial with a value in one archive only counts in
+    ``before_only`` or ``after_only``: its row is absent from the other archive, unselected or unscored there, or
+    lacks the metric there. A benchmark absent from one archive has ``None`` on that side.
 
     Raises:
         ValueError: if two corpora of one benchmark in an archive share a source row and trial.

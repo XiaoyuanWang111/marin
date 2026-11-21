@@ -64,11 +64,12 @@ def write_archive(root, corpus, observations):
         with store.transaction() as transaction:
             run = {"datasets": [{"dataset": dataset, "protocol": GSM8K.model_dump(mode="json"), "manifest": manifest}]}
             transaction.write_object(RUN_OBJECT, json.dumps(run).encode())
-            for row in sorted({row for row, *_ in observations}):
+            source_rows = {row: f"main/test-00000-of-00001.parquet:{row}" for row, *_ in observations}
+            for row, source_row in sorted(source_rows.items()):
                 transaction.table(SELECTIONS_TABLE).add(
                     Selection(
                         dataset=dataset,
-                        source_row=f"main/test.parquet:{row}",
+                        source_row=source_row,
                         source_ordinal=row,
                         status="selected",
                         reason=None,
@@ -83,7 +84,7 @@ def write_archive(root, corpus, observations):
                 attempt = Attempt(
                     dataset=dataset,
                     task_id=f"{corpus}-{row}",
-                    source_row=f"main/test.parquet:{row}",
+                    source_row=source_rows[row],
                     trial=0,
                     retry=retry,
                     phase=phase,
