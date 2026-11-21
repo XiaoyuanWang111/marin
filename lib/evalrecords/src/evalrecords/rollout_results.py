@@ -1,12 +1,13 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read logical evaluation trials, coverage and benchmark scores from a single archive snapshot."""
+"""Read logical evaluation trials, coverage and benchmark scores from an archive snapshot, and compare two archives."""
 
 import json
 import math
 from collections import defaultdict
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 from finestore.eval import ARCHIVE_SAMPLES_TABLE
 from finestore.reader import ReadView
@@ -53,13 +54,20 @@ def logical_samples(reader: ReadView, *, task: str | None = None) -> Iterator[di
             yield row
 
 
+_TrialRows = tuple[dict[tuple[str, str, int], dict], dict[tuple[str, str], dict]]
+"""The latest finished attempt of each logical trial, and the logical samples by trial and document."""
+
+
+def _trial_rows(reader: ReadView) -> _TrialRows:
+    return terminal_attempts(reader), {(row["trial_id"], row["doc_id"]): row for row in logical_samples(reader)}
+
+
 def evaluation_coverage(reader: ReadView) -> dict[str, TaskCoverage]:
     """Count declared, selected and scored trials without enlarging denominators on retry."""
     payload = reader.read_blob(RUN_OBJECT)
     assert payload is not None
     run = json.loads(payload)
-    attempts = terminal_attempts(reader)
-    samples = {(row["trial_id"], row["doc_id"]): row for row in logical_samples(reader)}
+    attempts, samples = _trial_rows(reader)
     selected = defaultdict(set)
     for row in reader.iter_rows(SELECTIONS_TABLE):
         if row["status"] == "selected":
@@ -117,6 +125,38 @@ def _reduce(values: list[tuple[str, float, float]], kind: SummaryKind) -> tuple[
     return mean, stderr
 
 
+@dataclass(frozen=True)
+class _ScoredTrial:
+    """A scored terminal attempt with its sample and metric values."""
+
+    attempt: dict
+    sample: dict
+    values: dict[str, float]
+
+
+def _scored_trials(
+    protocol: EvaluationProtocol,
+    datasets: list[str],
+    attempts: dict[tuple[str, str, int], dict],
+    samples: dict[tuple[str, str], dict],
+) -> Iterator[_ScoredTrial]:
+    """Yield each scored terminal attempt of one benchmark with its sample and metric values.
+
+    The primary metric falls back to the grading score; an attempt with neither is skipped.
+    """
+    for attempt in attempts.values():
+        if attempt["dataset"] not in datasets or attempt["outcome"] not in SCORED_OUTCOMES:
+            continue
+        sample = samples[(f"{attempt['dataset']}/{attempt['trial']}/{attempt['retry']}", attempt["task_id"])]
+        observed = dict(sample["metrics"] or {})
+        if protocol.primary_metric not in observed:
+            score = (sample["grading"] or {}).get("score")
+            if score is None:
+                continue
+            observed[protocol.primary_metric] = score
+        yield _ScoredTrial(attempt, sample, observed)
+
+
 def _benchmark_summary(
     protocol: EvaluationProtocol,
     datasets: list[str],
@@ -138,31 +178,22 @@ def _benchmark_summary(
     }
     values = defaultdict(list)
     group_values = defaultdict(lambda: defaultdict(list))
-    for attempt in attempts.values():
-        if attempt["dataset"] not in datasets or attempt["outcome"] not in SCORED_OUTCOMES:
-            continue
-        sample = samples[(f"{attempt['dataset']}/{attempt['trial']}/{attempt['retry']}", attempt["task_id"])]
-        observed = dict(sample["metrics"] or {})
-        if protocol.primary_metric not in observed:
-            score = (sample["grading"] or {}).get("score")
-            if score is None:
-                continue
-            observed[protocol.primary_metric] = score
+    for trial in _scored_trials(protocol, datasets, attempts, samples):
         weights = {}
         if protocol.summary is SummaryKind.WEIGHTED_MEAN:
-            grade = json.loads(sample["grading"]["detail"])
+            grade = json.loads(trial.sample["grading"]["detail"])
             weights = grade["detail"].get("metric_weights", {})
-        sample_groups = json.loads(sample["doc"] or "{}").get("groups", {})
+        sample_groups = json.loads(trial.sample["doc"] or "{}").get("groups", {})
         for metric in protocol.metrics:
-            if metric.name not in observed:
+            if metric.name not in trial.values:
                 continue
-            value = observed[metric.name]
+            value = trial.values[metric.name]
             if not math.isfinite(value):
                 raise ValueError(f"Non-finite metric {metric.name} in {results_path}")
             weight = weights.get(metric.name, 1) if protocol.summary is SummaryKind.WEIGHTED_MEAN else 1
             if weight <= 0:
                 raise ValueError(f"Non-positive metric weight for {metric.name}")
-            datum = (attempt["dataset"] + ":" + attempt["source_row"], value, weight)
+            datum = (trial.attempt["dataset"] + ":" + trial.attempt["source_row"], value, weight)
             values[metric.name].append(datum)
             for group, label in sample_groups.items():
                 group_values[f"{group}={label}"][metric.name].append(datum)
@@ -253,6 +284,49 @@ def _published_selection(
     return selection or published
 
 
+@dataclass(frozen=True)
+class BenchmarkScores:
+    """One benchmark's summary protocol, dataset snapshots, reduced metrics and trial coverage in an archive."""
+
+    protocol: EvaluationProtocol
+    datasets: tuple[str, ...]
+    metrics: dict[str, float]
+    coverage: TaskCoverage
+
+
+def benchmark_scores(reader: ReadView) -> dict[str, BenchmarkScores]:
+    """Reduce each benchmark's declared metrics over the latest finished attempt per logical trial.
+
+    Each metric is reduced with its protocol's summary kind. The archive must hold a run descriptor.
+    """
+    payload = reader.read_blob(RUN_OBJECT)
+    assert payload is not None
+    protocols = {
+        entry["dataset"]: EvaluationProtocol.model_validate(entry["protocol"])
+        for entry in json.loads(payload)["datasets"]
+    }
+    attempts = terminal_attempts(reader)
+    samples = {(row["trial_id"], row["doc_id"]): row for row in logical_samples(reader)}
+    coverage = evaluation_coverage(reader)
+    groups = defaultdict(list)
+    for dataset, protocol in protocols.items():
+        groups[protocol.benchmark].append(dataset)
+    scores = {}
+    for name, datasets in groups.items():
+        protocol = protocols[datasets[0]]
+        for dataset in datasets[1:]:
+            other = protocols[dataset]
+            if other.model_dump(exclude={"expected_population"}) != protocol.model_dump(exclude={"expected_population"}):
+                raise ValueError(f"Inconsistent summary protocols for benchmark {name}")
+        scores[name] = BenchmarkScores(
+            protocol,
+            tuple(datasets),
+            _benchmark_summary(protocol, datasets, attempts, samples, reader.root),
+            coverage[name],
+        )
+    return scores
+
+
 def score_curated_record(record: EvalRunRecord) -> EvalRunRecord:
     """Derive benchmark scores from one FineStore snapshot, leaving the producer record unchanged.
 
@@ -265,30 +339,24 @@ def score_curated_record(record: EvalRunRecord) -> EvalRunRecord:
     payload = reader.read_blob(RUN_OBJECT)
     if payload is None:
         return record
-    run = json.loads(payload)
-    protocols = {entry["dataset"]: EvaluationProtocol.model_validate(entry["protocol"]) for entry in run["datasets"]}
-    manifests = {entry["dataset"]: entry["manifest"] for entry in run["datasets"]}
-    attempts = terminal_attempts(reader)
-    samples = {(row["trial_id"], row["doc_id"]): row for row in logical_samples(reader)}
-    coverage = evaluation_coverage(reader)
-    groups = defaultdict(list)
-    for dataset, protocol in protocols.items():
-        groups[protocol.benchmark].append(dataset)
-    metrics, tasks = {}, []
-    for name, datasets in groups.items():
-        protocol = protocols[datasets[0]]
-        for dataset in datasets[1:]:
-            other = protocols[dataset]
-            if other.model_dump(exclude={"expected_population"}) != protocol.model_dump(exclude={"expected_population"}):
-                raise ValueError(f"Inconsistent summary protocols for benchmark {name}")
-        metrics[name] = _benchmark_summary(protocol, datasets, attempts, samples, record.results_path)
-        tasks.append(_task_ref(name, protocol, [manifests[dataset] for dataset in datasets], coverage[name]))
-    selection = _published_selection(record.evaluation.curated.selection, protocols, manifests, groups)
+    manifests = {entry["dataset"]: entry["manifest"] for entry in json.loads(payload)["datasets"]}
+    scores = benchmark_scores(reader)
+    metrics = {name: score.metrics for name, score in scores.items()}
+    tasks = [
+        _task_ref(name, score.protocol, [manifests[dataset] for dataset in score.datasets], score.coverage)
+        for name, score in scores.items()
+    ]
+    selection = _published_selection(
+        record.evaluation.curated.selection,
+        {dataset: score.protocol for score in scores.values() for dataset in score.datasets},
+        manifests,
+        {name: list(score.datasets) for name, score in scores.items()},
+    )
     return record.model_copy(
         update={
             "metrics": metrics,
             "canonical_metrics": metrics,
-            "coverage": coverage,
+            "coverage": {name: score.coverage for name, score in scores.items()},
             "evaluation": record.evaluation.model_copy(
                 update={
                     "tasks": tuple(tasks),
@@ -297,3 +365,81 @@ def score_curated_record(record: EvalRunRecord) -> EvalRunRecord:
             ),
         }
     )
+
+
+@dataclass(frozen=True)
+class TrialChanges:
+    """How one metric's values moved across the logical trials of two archives."""
+
+    paired: int
+    """Trials with a value for the metric in both archives."""
+    increased: int
+    decreased: int
+    before_only: int
+    """Trials with a value in the first archive only."""
+    after_only: int
+    """Trials with a value in the second archive only."""
+
+
+@dataclass(frozen=True)
+class ScoreComparison:
+    """One benchmark's scores in two archives and the trial changes of each metric declared in either."""
+
+    before: BenchmarkScores | None
+    after: BenchmarkScores | None
+    changes: dict[str, TrialChanges]
+
+
+def compare_scores(before: ReadView, after: ReadView) -> dict[str, ScoreComparison]:
+    """Compare each benchmark's scores in two archives and count the trials whose metric values changed.
+
+    The archives are typically a run and a regrade of its stored responses, or two runs of the same corpora.
+    ``before`` and ``after`` of each benchmark are the ``benchmark_scores`` of each archive, the scores that
+    ``score_curated_record`` derives. Trials pair by benchmark, source row and trial index, so a run on a republished
+    corpus, whose dataset snapshot has a new identity, still pairs with the original. Each archive contributes the
+    attempt that ``terminal_attempts`` chooses for a trial; attempts left at ``started`` and earlier retries never
+    count. A trial has a value for a metric when its terminal attempt is scored and its sample holds the metric, the
+    primary metric falling back to the grading score, as in the scores. ``changes`` covers each metric declared in
+    either archive. A trial with a value in one archive only counts in ``before_only`` or ``after_only``: its row is
+    absent from the other archive, was not selected there, ended unscored there, or lacks the metric there. A benchmark
+    absent from one archive has ``None`` on that side.
+
+    Raises:
+        ValueError: if two corpora of one benchmark in an archive share a source row and trial.
+    """
+    before_scores, after_scores = benchmark_scores(before), benchmark_scores(after)
+    before_trials, after_trials = _trial_values(before, before_scores), _trial_values(after, after_scores)
+    comparisons = {}
+    for name in dict.fromkeys([*before_scores, *after_scores]):
+        sides = [scores[name] for scores in (before_scores, after_scores) if name in scores]
+        changes = {}
+        for metric in dict.fromkeys(metric.name for side in sides for metric in side.protocol.metrics):
+            old = {trial: values[metric] for trial, values in before_trials.get(name, {}).items() if metric in values}
+            new = {trial: values[metric] for trial, values in after_trials.get(name, {}).items() if metric in values}
+            paired = old.keys() & new.keys()
+            changes[metric] = TrialChanges(
+                paired=len(paired),
+                increased=sum(new[trial] > old[trial] for trial in paired),
+                decreased=sum(new[trial] < old[trial] for trial in paired),
+                before_only=len(old.keys() - paired),
+                after_only=len(new.keys() - paired),
+            )
+        comparisons[name] = ScoreComparison(before_scores.get(name), after_scores.get(name), changes)
+    return comparisons
+
+
+def _trial_values(
+    reader: ReadView, scores: dict[str, BenchmarkScores]
+) -> dict[str, dict[tuple[str, int], dict[str, float]]]:
+    """Each benchmark's metric values by source row and trial, from the scored terminal attempt of each trial."""
+    attempts, samples = _trial_rows(reader)
+    values = {}
+    for name, score in scores.items():
+        trials: dict[tuple[str, int], dict[str, float]] = {}
+        for trial in _scored_trials(score.protocol, list(score.datasets), attempts, samples):
+            key = (trial.attempt["source_row"], trial.attempt["trial"])
+            if key in trials:
+                raise ValueError(f"Two corpora of {name} in {reader.root} share source row {key[0]}, trial {key[1]}")
+            trials[key] = trial.values
+        values[name] = trials
+    return values

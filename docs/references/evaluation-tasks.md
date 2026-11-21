@@ -281,6 +281,17 @@ coverage remain unchanged; this compatibility rule requires no model rerun or
 archive rewrite. The newest identified declaration governs known corpus differences;
 a newer unidentified record cannot erase them. Producer records keep their metric maps empty.
 
+`compare_scores(before, after)` in `evalrecords.rollout_results` compares two
+archives of the same benchmarks, such as a run and a regrade of its stored model
+responses, or a run before and after a corpus republish. For each benchmark it
+returns both archives' `benchmark_scores`, the reductions that `score_curated_record`
+reports. For each metric that either protocol declares, it counts the logical trials
+scored in both archives and those whose value increased or decreased. Trials pair by
+benchmark, source row and trial index, so a republished corpus with a new snapshot
+identity still pairs. Each archive contributes the latest finished attempt of each
+trial. A trial scored in one archive only, because its row is absent, unselected or
+unscored in the other, is counted separately.
+
 Dashboard measurements use shared normalization rules for historical and native records:
 
 | Source metric | Canonical metric | Scope |
